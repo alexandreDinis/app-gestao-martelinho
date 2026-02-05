@@ -20,7 +20,8 @@ export const SYNC_PRIORITIES = {
 
 export interface BaseLocalEntity {
     id: number;
-    local_id: string;
+    local_id: string; // Mantendo por compatibilidade enquanto migramos
+    uuid?: string;    // Novo identificador universal
     server_id: number | null;
     version: number;
     sync_status: SyncStatus;
@@ -96,15 +97,15 @@ export interface LocalTipoPeca {
 
 export interface SyncQueueItem {
     id: number;
-    entity_type: string;
-    entity_local_id: string;
-    operation: 'CREATE' | 'UPDATE' | 'DELETE';
+    resource: string;       // ex: 'cliente', 'os'
+    temp_id: string;       // GUID local
+    action: 'CREATE' | 'UPDATE' | 'DELETE';
     payload: string | null;
-    priority: SyncPriority;
-    attempts: number;
-    last_attempt: number | null;
-    error_message: string | null;
+    status: 'PENDING' | 'PROCESSED' | 'ERROR';
     created_at: number;
+    attempts: number;
+    last_attempt?: number | null;
+    error_message?: string | null;
 }
 
 export interface AuditLogEntry {

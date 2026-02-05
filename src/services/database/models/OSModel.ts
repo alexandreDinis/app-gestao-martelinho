@@ -90,14 +90,17 @@ export const OSModel = {
             }
         }
 
+        const uuid = localId; // Usando localId como UUID
+
         const id = await databaseService.runInsert(
             `INSERT INTO ordens_servico (
-        local_id, server_id, version, cliente_id, cliente_local_id,
+        local_id, uuid, server_id, version, cliente_id, cliente_local_id,
         data, data_vencimento, status, valor_total,
         sync_status, updated_at, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
                 localId,
+                uuid,
                 null, // server_id
                 1, // version
                 clienteId,
@@ -118,6 +121,15 @@ export const OSModel = {
         }
 
         return (await this.getById(id))!;
+    },
+
+    /**
+     * Salvar múltiplas OS do servidor no cache local (Batch)
+     */
+    async upsertBatch(osList: OrdemServico[]): Promise<void> {
+        for (const os of osList) {
+            await this.upsertFromServer(os);
+        }
     },
 
     /**
@@ -164,14 +176,17 @@ export const OSModel = {
         } else {
             // Inserir novo
             const localId = uuidv4();
+            const uuid = localId; // Usando localId como UUID
+
             const id = await databaseService.runInsert(
                 `INSERT INTO ordens_servico (
-          local_id, server_id, version, cliente_id, cliente_local_id,
+          local_id, uuid, server_id, version, cliente_id, cliente_local_id,
           data, data_vencimento, status, valor_total, tipo_desconto, valor_desconto,
           sync_status, last_synced_at, updated_at, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SYNCED', ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SYNCED', ?, ?, ?)`,
                 [
                     localId,
+                    uuid,
                     os.id,
                     1,
                     clienteId,
@@ -292,20 +307,20 @@ export const OSModel = {
         const now = Date.now();
 
         const existing = await databaseService.getFirst<{ id: number }>(
-            `SELECT id FROM sync_queue WHERE entity_type = 'os' AND entity_local_id = ?`,
+            `SELECT id FROM sync_queue WHERE resource = 'os' AND temp_id = ? AND status = 'PENDING'`,
             [localId]
         );
 
         if (existing) {
             await databaseService.runUpdate(
-                `UPDATE sync_queue SET operation = ?, payload = ?, priority = ?, created_at = ? WHERE id = ?`,
-                [operation, payload ? JSON.stringify(payload) : null, priority, now, existing.id]
+                `UPDATE sync_queue SET action = ?, payload = ?, created_at = ?, attempts = 0 WHERE id = ?`,
+                [operation, payload ? JSON.stringify(payload) : null, now, existing.id]
             );
         } else {
             await databaseService.runInsert(
-                `INSERT INTO sync_queue (entity_type, entity_local_id, operation, payload, priority, created_at)
-         VALUES ('os', ?, ?, ?, ?, ?)`,
-                [localId, operation, payload ? JSON.stringify(payload) : null, priority, now]
+                `INSERT INTO sync_queue (resource, temp_id, action, payload, status, created_at, attempts)
+          VALUES ('os', ?, ?, ?, 'PENDING', ?, 0)`,
+                [localId, operation, payload ? JSON.stringify(payload) : null, now]
             );
         }
     }

@@ -1,5 +1,5 @@
 import axios from 'axios';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as SecureStore from 'expo-secure-store';
 
 // In Emulator (Android), localhost is 10.0.2.2.
 // Replace with your text machine IP if testing on physical device (e.g., http://192.168.1.15:8080/api/v1)
@@ -13,11 +13,16 @@ const api = axios.create({
     },
 });
 
+import { Logger } from './Logger';
+
 // Request Interceptor
 api.interceptors.request.use(
     async (config) => {
         try {
-            const userStr = await AsyncStorage.getItem('user');
+            // Log Request
+            Logger.info(`API Request: ${config.method?.toUpperCase()} ${config.url}`, config.data);
+
+            const userStr = await SecureStore.getItemAsync('user');
             if (userStr) {
                 const user = JSON.parse(userStr);
                 if (user && user.token) {
@@ -25,26 +30,33 @@ api.interceptors.request.use(
                 }
             }
         } catch (error) {
-            console.error("Error retrieving token:", error);
+            Logger.error("Error retrieving token:", error);
         }
         return config;
     },
     (error) => {
+        Logger.error("API Request Error:", error);
         return Promise.reject(error);
     }
 );
 
 // Response Interceptor
 api.interceptors.response.use(
-    (response) => response,
+    (response) => {
+        Logger.info(`API Response: ${response.status} ${response.config.url}`, response.data);
+        return response;
+    },
     async (error) => {
         if (error.response) {
+            Logger.error(`API Error: ${error.response.status} ${error.config?.url}`, error.response.data);
             if (error.response.status === 401) {
-                console.warn("[API] 401 Unauthorized - Token invalid/expired");
+                Logger.warn("[API] 401 Unauthorized - Token invalid/expired");
                 // In React Native, we can't just redirect via window.location.
                 // We should clear storage so the App's AuthState updates on next check.
-                await AsyncStorage.removeItem('user');
+                await SecureStore.deleteItemAsync('user');
             }
+        } else {
+            Logger.error("API Network Error:", error.message);
         }
         return Promise.reject(error);
     }

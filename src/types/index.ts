@@ -204,3 +204,27 @@ export interface CreateLancamentoRequest {
     categoria?: string;
     formaPagamento: 'DINHEIRO' | 'PIX' | 'CARTAO_CREDITO' | 'CARTAO_DEBITO' | 'TRANSFERENCIA' | 'BOLETO';
 }
+
+export interface DespesaRequest {
+    dataDespesa: string;
+    valor: number;
+    categoria: string;
+    descricao: string;
+    pagoAgora?: boolean;
+    dataVencimento?: string;
+    meioPagamento?: string;
+    cartaoId?: number;
+    numeroParcelas?: number;
+}
+
+export interface Despesa {
+    id: number;
+    dataDespesa: string;
+    valor: number;
+    categoria: string;
+    descricao: string;
+    pagoAgora: boolean;
+    dataVencimento?: string;
+    meioPagamento?: string;
+    cartaoId?: number;
+}

@@ -3,8 +3,12 @@ import { View, Text, TouchableOpacity, ScrollView, Alert, ActivityIndicator } fr
 import { useNavigation } from '@react-navigation/native';
 import { ChevronLeft, DollarSign, FileText, Tag, Calendar, CheckCircle } from 'lucide-react-native';
 import { financeiroService } from '../services/financeiroService';
+import { despesaService } from '../services/despesaService';
+import { cartaoService, Cartao } from '../services/cartaoService';
 import { theme } from '../theme';
 import { Card, Input, Button } from '../components/ui';
+import { DespesaRequest } from '../types';
+import { Picker } from '@react-native-picker/picker';
 
 export const ExpenseFormScreen = () => {
     const navigation = useNavigation();
@@ -15,6 +19,22 @@ export const ExpenseFormScreen = () => {
     const [categoria, setCategoria] = useState('');
     const [formaPagamento, setFormaPagamento] = useState<'DINHEIRO' | 'PIX' | 'CARTAO_CREDITO' | 'CARTAO_DEBITO' | 'TRANSFERENCIA' | 'BOLETO'>('PIX');
     const [loading, setLoading] = useState(false);
+
+    // Credit Card & Installments
+    const [cartoes, setCartoes] = useState<Cartao[]>([]);
+    const [cartaoId, setCartaoId] = useState<number | undefined>(undefined);
+    const [numeroParcelas, setNumeroParcelas] = useState(1);
+
+    React.useEffect(() => {
+        cartaoService.listar().then(setCartoes).catch(console.error);
+    }, []);
+
+    const valorNumerico = parseFloat(valor.replace(',', '.')) || 0;
+
+    const installmentValue = React.useMemo(() => {
+        if (valorNumerico <= 0 || numeroParcelas <= 1) return null;
+        return (valorNumerico / numeroParcelas).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    }, [valorNumerico, numeroParcelas]);
 
     const handleSave = async () => {
         if (!descricao || !valor || !categoria) {
@@ -32,22 +52,31 @@ export const ExpenseFormScreen = () => {
 
         try {
             setLoading(true);
-            await financeiroService.adicionarLancamento({
-                descricao,
+
+            const payload: DespesaRequest = {
+                dataDespesa: new Date().toISOString().split('T')[0],
                 valor: valorNumerico,
-                tipo: 'DESPESA',
                 categoria: categoria.toUpperCase(),
-                formaPagamento,
-                data: new Date().toISOString().split('T')[0] // Today
-            });
+                descricao: descricao,
+                pagoAgora: formaPagamento !== 'CARTAO_CREDITO', // If credit card, it's NOT paid now (invoice)
+                meioPagamento: formaPagamento,
+                cartaoId: formaPagamento === 'CARTAO_CREDITO' ? cartaoId : undefined,
+                numeroParcelas: formaPagamento === 'CARTAO_CREDITO' ? numeroParcelas : undefined
+            };
+
+            if (payload.numeroParcelas && payload.numeroParcelas > 1) {
+                await despesaService.createParcelada(payload);
+            } else {
+                await despesaService.create(payload);
+            }
 
             Alert.alert('Sucesso', 'Despesa registrada com sucesso!', [
                 { text: 'OK', onPress: () => navigation.goBack() }
             ]);
 
-        } catch (error) {
+        } catch (error: any) {
             console.error(error);
-            Alert.alert('Erro', 'Falha ao salvar despesa.');
+            Alert.alert('Erro', error.response?.data?.message || 'Falha ao salvar despesa.');
         } finally {
             setLoading(false);
         }
@@ -147,6 +176,46 @@ export const ExpenseFormScreen = () => {
                                 </TouchableOpacity>
                             ))}
                         </View>
+                        {/* Credit Card Specific Fields */}
+                        {formaPagamento === 'CARTAO_CREDITO' && (
+                            <View style={{ marginBottom: 24, padding: 16, backgroundColor: 'rgba(0,0,0,0.03)', borderRadius: 8 }}>
+                                <Text style={{ fontSize: 12, fontWeight: '700', color: theme.colors.text, marginBottom: 8 }}>
+                                    SELECIONE O CARTÃO
+                                </Text>
+                                <Picker
+                                    selectedValue={cartaoId}
+                                    onValueChange={(itemValue) => setCartaoId(itemValue)}
+                                    style={{ backgroundColor: theme.colors.background }}
+                                >
+                                    <Picker.Item label="Selecione um cartão..." value={undefined} />
+                                    {cartoes.map(c => (
+                                        <Picker.Item key={c.id} label={c.nome} value={c.id} />
+                                    ))}
+                                </Picker>
+
+                                <Text style={{ fontSize: 12, fontWeight: '700', color: theme.colors.text, marginTop: 16, marginBottom: 8 }}>
+                                    PARCELAMENTO
+                                </Text>
+                                <Picker
+                                    selectedValue={numeroParcelas}
+                                    onValueChange={(itemValue) => setNumeroParcelas(itemValue)}
+                                    style={{ backgroundColor: theme.colors.background }}
+                                >
+                                    {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(num => {
+                                        const val = valorNumerico > 0
+                                            ? (valorNumerico / num).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
+                                            : '';
+                                        return (
+                                            <Picker.Item
+                                                key={num}
+                                                label={`${num}x ${val ? `- ${val}` : ''} ${num === 1 ? '(À Vista)' : ''}`}
+                                                value={num}
+                                            />
+                                        );
+                                    })}
+                                </Picker>
+                            </View>
+                        )}
                     </View>
 
                     {/* Date Info (Read Only for MVP) */}

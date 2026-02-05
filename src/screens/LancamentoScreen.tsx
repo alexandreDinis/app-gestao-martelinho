@@ -7,7 +7,6 @@ import { despesaService } from '../services/despesaService';
 import { cartaoService } from '../services/cartaoService';
 import { theme } from '../theme';
 import { Card, Input, Button } from '../components/ui';
-import NetInfo from '@react-native-community/netinfo';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../navigation/types';
 
@@ -24,17 +23,18 @@ export const LancamentoScreen = () => {
         pagoAgora: false,
         meioPagamento: '',
         dataVencimento: '',
-        cartaoId: null as number | null
+        cartaoId: null as number | null,
+        numeroParcelas: 1
     });
 
     // UI State
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
-    const [isOnline, setIsOnline] = useState(true);
 
     // Data State
     const [cartoes, setCartoes] = useState<any[]>([]);
     const [loadingCartoes, setLoadingCartoes] = useState(true);
+    const [limiteInfo, setLimiteInfo] = useState<import('../services/cartaoService').LimiteDisponivelDTO | null>(null);
 
     // Categorias (mesmo da web)
     const categorias = [
@@ -100,16 +100,20 @@ export const LancamentoScreen = () => {
     ];
 
     useEffect(() => {
-        // Monitorar conexão
-        const unsubscribe = NetInfo.addEventListener(state => {
-            setIsOnline(!!state.isConnected && !!state.isInternetReachable);
-        });
-
         // Carregar cartões
         carregarCartoes();
-
-        return () => unsubscribe();
     }, []);
+
+    useEffect(() => {
+        if (values.cartaoId) {
+            setLimiteInfo(null); // Reset while loading
+            cartaoService.getLimiteDisponivel(values.cartaoId)
+                .then(setLimiteInfo)
+                .catch(err => console.error("Erro ao buscar limite:", err));
+        } else {
+            setLimiteInfo(null);
+        }
+    }, [values.cartaoId]);
 
     const carregarCartoes = async () => {
         try {
@@ -142,9 +146,15 @@ export const LancamentoScreen = () => {
                     return {
                         ...newValues,
                         cartaoId: null,
-                        meioPagamento: ''
+                        meioPagamento: '',
+                        numeroParcelas: 1
                     };
                 }
+            }
+
+            // Resetar parcelas se mudar meio de pagamento para algo que não seja cartão
+            if (name === 'meioPagamento' && value !== 'CARTAO_CREDITO') {
+                newValues.numeroParcelas = 1;
             }
 
             return newValues;
@@ -198,16 +208,20 @@ export const LancamentoScreen = () => {
         try {
             setLoading(true);
 
-            await despesaService.create({
+            // Payload base
+            const payload = {
                 ...values,
                 valor: numericValor,
-            });
+            };
 
-            const mensagem = isOnline
-                ? 'Despesa registrada com sucesso!'
-                : 'Despesa salva! Será sincronizada quando houver internet.';
+            // Roteamento para endpoint correto (Parcelado vs Simples)
+            if (values.numeroParcelas > 1) {
+                await despesaService.createParcelada(payload);
+            } else {
+                await despesaService.create(payload);
+            }
 
-            Alert.alert('Sucesso', mensagem, [
+            Alert.alert('Sucesso', 'Despesa registrada com sucesso!', [
                 { text: 'OK', onPress: () => navigation.goBack() }
             ]);
 
@@ -251,48 +265,9 @@ export const LancamentoScreen = () => {
                         Registrar saída de caixa
                     </Text>
                 </View>
-
-                {/* Status de conexão */}
-                <View style={{ alignItems: 'center' }}>
-                    {isOnline ? (
-                        <Wifi size={20} color="#10b981" />
-                    ) : (
-                        <WifiOff size={20} color="#ef4444" />
-                    )}
-                    <Text style={{
-                        fontSize: 9,
-                        color: isOnline ? '#10b981' : '#ef4444',
-                        marginTop: 2,
-                        fontWeight: '600'
-                    }}>
-                        {isOnline ? 'Online' : 'Offline'}
-                    </Text>
-                </View>
             </View>
 
-            {/* Banner de modo offline */}
-            {!isOnline && (
-                <View style={{
-                    backgroundColor: '#fef3c7',
-                    paddingVertical: 12,
-                    paddingHorizontal: 16,
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    borderBottomWidth: 1,
-                    borderBottomColor: '#fcd34d'
-                }}>
-                    <CloudOff size={16} color="#f59e0b" />
-                    <Text style={{
-                        marginLeft: 8,
-                        fontSize: 11,
-                        color: '#92400e',
-                        flex: 1,
-                        fontWeight: '500'
-                    }}>
-                        Modo Offline: Dados serão salvos localmente e sincronizados automaticamente
-                    </Text>
-                </View>
-            )}
+
 
             {/* Erro */}
             {error && (
@@ -375,14 +350,54 @@ export const LancamentoScreen = () => {
                                 )}
                             </Picker>
                         </View>
+                        {/* Info do Cartão Selecionado */}
                         {values.cartaoId && (
-                            <Text style={{
-                                fontSize: 9,
-                                color: theme.colors.textMuted,
-                                marginTop: 4
-                            }}>
-                                ⚡ Despesa será agrupada na fatura do cartão automaticamente
-                            </Text>
+                            <View>
+                                <Text style={{
+                                    fontSize: 9,
+                                    color: theme.colors.textMuted,
+                                    marginTop: 4
+                                }}>
+                                    ⚡ Despesa será agrupada na fatura do cartão automaticamente
+                                </Text>
+
+                                {(() => {
+                                    const cartaoSelecionado = cartoes.find(c => c.id === values.cartaoId);
+                                    if (!cartaoSelecionado) return null;
+
+                                    return (
+                                        <View style={{
+                                            flexDirection: 'row',
+                                            justifyContent: 'space-between',
+                                            marginTop: 8,
+                                            paddingTop: 8,
+                                            borderTopWidth: 1,
+                                            borderTopColor: theme.colors.border
+                                        }}>
+                                            <View>
+                                                <Text style={{ fontSize: 9, color: theme.colors.textMuted, fontWeight: '700' }}>LIMITE TOTAL</Text>
+                                                <Text style={{ fontSize: 11, color: theme.colors.text, fontWeight: '700' }}>
+                                                    {cartaoSelecionado.limite?.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                                                </Text>
+                                            </View>
+                                            <View style={{ alignItems: 'flex-end' }}>
+                                                <Text style={{ fontSize: 9, color: theme.colors.textMuted, fontWeight: '700' }}>DISPONÍVEL</Text>
+                                                {limiteInfo ? (
+                                                    <Text style={{
+                                                        fontSize: 11,
+                                                        color: (limiteInfo.limiteDisponivel || 0) < 0 ? theme.colors.error : theme.colors.text,
+                                                        fontWeight: '700'
+                                                    }}>
+                                                        {(limiteInfo.limiteDisponivel || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                                                    </Text>
+                                                ) : (
+                                                    <ActivityIndicator size="small" color={theme.colors.primary} style={{ transform: [{ scale: 0.7 }] }} />
+                                                )}
+                                            </View>
+                                        </View>
+                                    );
+                                })()}
+                            </View>
                         )}
                     </View>
 
@@ -572,6 +587,64 @@ export const LancamentoScreen = () => {
                         </View>
                     </View>
 
+                    {/* Parcelas - Apenas para Cartão de Crédito */}
+                    {values.meioPagamento === 'CARTAO_CREDITO' && (
+                        <View style={{ marginBottom: 16 }}>
+                            <Text style={{
+                                fontSize: 10,
+                                fontWeight: '700',
+                                color: theme.colors.textSecondary,
+                                marginBottom: 8,
+                                letterSpacing: 1
+                            }}>
+                                PARCELAS
+                            </Text>
+                            <View style={{
+                                backgroundColor: theme.colors.backgroundSecondary,
+                                borderWidth: 1,
+                                borderColor: theme.colors.border,
+                                borderRadius: theme.borderRadius.sm,
+                            }}>
+                                <Picker
+                                    selectedValue={values.numeroParcelas}
+                                    onValueChange={(value) => handleChange('numeroParcelas', value)}
+                                    style={{ color: theme.colors.text }}
+                                    dropdownIconColor={theme.colors.text}
+                                >
+                                    {Array.from({ length: 12 }, (_, i) => i + 1).map(num => (
+                                        <Picker.Item
+                                            key={num}
+                                            label={`${num}x${num > 1 ? ` de ${(Number(values.valor.replace(/\D/g, '')) / 100 / num).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}` : ''}`}
+                                            value={num}
+                                            color={theme.colors.text}
+                                            style={{ backgroundColor: theme.colors.backgroundSecondary }}
+                                        />
+                                    ))}
+                                </Picker>
+                            </View>
+                            {values.numeroParcelas > 1 && (
+                                <View style={{
+                                    flexDirection: 'row',
+                                    justifyContent: 'flex-end',
+                                    marginTop: 8,
+                                    backgroundColor: 'rgba(52, 211, 153, 0.1)',
+                                    padding: 8,
+                                    borderRadius: 4,
+                                    borderWidth: 1,
+                                    borderColor: 'rgba(52, 211, 153, 0.3)'
+                                }}>
+                                    <Text style={{
+                                        fontSize: 11,
+                                        color: '#059669', // Emerald 600
+                                        fontWeight: '700',
+                                    }}>
+                                        ℹ️ Valor da parcela: {(Number(values.valor.replace(/\D/g, '')) / 100 / values.numeroParcelas).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                                    </Text>
+                                </View>
+                            )}
+                        </View>
+                    )}
+
                     {/* Descrição */}
                     <Input
                         label="DESCRIÇÃO"
@@ -599,25 +672,7 @@ export const LancamentoScreen = () => {
                         }
                     </Button>
 
-                    {/* Aviso de salvamento offline */}
-                    {!isOnline && (
-                        <View style={{
-                            marginTop: 16,
-                            padding: 12,
-                            backgroundColor: 'rgba(251, 191, 36, 0.1)',
-                            borderRadius: 8,
-                            borderLeftWidth: 3,
-                            borderLeftColor: '#f59e0b'
-                        }}>
-                            <Text style={{
-                                fontSize: 11,
-                                color: theme.colors.textSecondary,
-                                lineHeight: 16
-                            }}>
-                                💾 Os dados serão salvos com segurança no dispositivo e enviados para o servidor automaticamente quando a conexão for restabelecida.
-                            </Text>
-                        </View>
-                    )}
+
                 </Card>
             </ScrollView>
         </View>

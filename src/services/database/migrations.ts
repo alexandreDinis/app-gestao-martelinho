@@ -2,10 +2,10 @@
 // Esquema SQL para banco de dados offline
 
 export const MIGRATIONS = [
-    {
-        version: 1,
-        name: 'initial_schema',
-        sql: `
+  {
+    version: 1,
+    name: 'initial_schema',
+    sql: `
       -- Tabela de Clientes
       CREATE TABLE IF NOT EXISTS clientes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -172,7 +172,66 @@ export const MIGRATIONS = [
         updated_at INTEGER
       );
     `
-    }
+  },
+  {
+    version: 2,
+    name: 'sync_queue_refactor_and_uuids',
+    sql: `
+      -- 1. Criar nova tabela sync_queue com schema atualizado
+      CREATE TABLE IF NOT EXISTS sync_queue_v2 (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        resource TEXT NOT NULL,         -- antigo entity_type
+        action TEXT NOT NULL,           -- antigo operation
+        payload TEXT,
+        temp_id TEXT,                   -- antigo entity_local_id
+        status TEXT DEFAULT 'PENDING',  -- status de processamento (PENDING, PROCESSED, ERROR)
+        created_at INTEGER,
+        attempts INTEGER DEFAULT 0,
+        last_attempt INTEGER,
+        error_message TEXT
+      );
+
+      -- 2. Tentar migrar dados da antiga sync_queue se existir
+      -- Mapeamento: entity_type -> resource, operation -> action, entity_local_id -> temp_id
+      INSERT INTO sync_queue_v2 (resource, action, payload, temp_id, status, created_at, attempts, last_attempt, error_message)
+      SELECT 
+        entity_type, 
+        operation, 
+        payload, 
+        entity_local_id, 
+        'PENDING', -- Resetando status para garantir processamento ou manter estado
+        created_at,
+        attempts,
+        last_attempt,
+        error_message
+      FROM sync_queue;
+
+      -- 3. Substituir a tabela antiga pela nova
+      DROP TABLE IF EXISTS sync_queue;
+      ALTER TABLE sync_queue_v2 RENAME TO sync_queue;
+      
+      -- Recriar índices para sync_queue
+      CREATE INDEX IF NOT EXISTS idx_sync_status ON sync_queue(status);
+      CREATE INDEX IF NOT EXISTS idx_sync_resource_temp_id ON sync_queue(resource, temp_id);
+
+      -- 4. Atualizar Tabela de Clientes com UUID
+      -- Adicionar coluna uuid se não existir (SQLite não suporta IF NOT EXISTS em ADD COLUMN, então ignoramos erro no código ou usamos bloco seguro se possível, mas aqui vamos direto)
+      -- Como é migration versionada, assume-se que roda uma vez.
+      ALTER TABLE clientes ADD COLUMN uuid TEXT;
+      
+      -- Preencher uuid com local_id para registros existentes
+      UPDATE clientes SET uuid = local_id WHERE uuid IS NULL AND local_id IS NOT NULL;
+      
+      -- Garantir sync_status (safe check implícito: se já existisse, o create table v1 já teria, se for banco legado sem v1, isso daria erro, mas assumimos base v1)
+      -- Nota: SQLite não suporta ADD COLUMN IF NOT EXISTS nativamente em todas versões, mas app deve estar na v1.
+      
+      -- 5. Atualizar Tabela de Ordens de Serviço com UUID
+      ALTER TABLE ordens_servico ADD COLUMN uuid TEXT;
+      
+      -- Preencher uuid com local_id
+      UPDATE ordens_servico SET uuid = local_id WHERE uuid IS NULL AND local_id IS NOT NULL;
+    `
+  }
 ];
 
-export const CURRENT_DB_VERSION = 1;
+export const CURRENT_DB_VERSION = 2;

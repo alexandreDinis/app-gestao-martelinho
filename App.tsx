@@ -14,6 +14,8 @@ import { CreateOSScreen } from './src/screens/CreateOSScreen';
 import { ClientFormScreen } from './src/screens/ClientFormScreen';
 import { RootStackParamList } from './src/navigation/types';
 import { theme } from './src/theme';
+import { NetworkStatusIndicator } from './src/components/NetworkStatusIndicator';
+import { Logger } from './src/services/Logger';
 
 const Stack = createStackNavigator<RootStackParamList>();
 
@@ -41,12 +43,44 @@ function AppRoutes() {
   );
 }
 
+import { databaseService } from './src/services/database/DatabaseService';
+import { ActivityIndicator, View } from 'react-native';
+
 export default function App() {
+  const [dbReady, setDbReady] = React.useState(false);
+
+  React.useEffect(() => {
+    async function init() {
+      try {
+        await databaseService.initialize();
+      } catch (e) {
+        console.error("Erro ao iniciar DB:", e);
+      } finally {
+        setDbReady(true);
+      }
+    }
+    init();
+  }, []);
+
+  if (!dbReady) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: theme.colors.background }}>
+        <ActivityIndicator size="large" color={theme.colors.primary} />
+      </View>
+    );
+  }
+
   return (
     <SafeAreaProvider>
-      <NavigationContainer>
+      <NavigationContainer
+        onStateChange={(state) => {
+          const currentRouteName = state?.routes[state.index].name;
+          Logger.info(`Navigation: Navigated to ${currentRouteName}`, state);
+        }}
+      >
         <AuthProvider>
           <StatusBar style="light" backgroundColor={theme.colors.background} />
+          <NetworkStatusIndicator />
           <AppRoutes />
         </AuthProvider>
       </NavigationContainer>

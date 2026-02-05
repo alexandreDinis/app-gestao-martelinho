@@ -4,6 +4,7 @@
 import { databaseService } from '../DatabaseService';
 import { v4 as uuidv4 } from 'uuid';
 import { LocalDespesa, SYNC_PRIORITIES } from './types';
+import type { Despesa } from '../../../types';
 
 export interface CreateDespesaLocal {
     data: string;
@@ -47,6 +48,76 @@ export const DespesaModel = {
        ORDER BY data_despesa DESC`,
             [startDate, endDate]
         );
+    },
+
+    /**
+     * Salvar múltiplas despesas do servidor (Batch)
+     */
+    async upsertBatch(despesas: Despesa[]): Promise<void> {
+        for (const despesa of despesas) {
+            await this.upsertFromServer(despesa);
+        }
+    },
+
+    /**
+     * Salvar despesa do servidor no cache local
+     */
+    async upsertFromServer(despesa: Despesa): Promise<LocalDespesa> {
+        const now = Date.now();
+        const existing = await databaseService.getFirst<LocalDespesa>(
+            `SELECT * FROM despesas WHERE server_id = ?`,
+            [despesa.id]
+        );
+
+        if (existing) {
+            await databaseService.runUpdate(
+                `UPDATE despesas SET
+          data_despesa = ?, data_vencimento = ?, valor = ?, categoria = ?,
+          descricao = ?, pago_agora = ?, meio_pagamento = ?, cartao_id = ?,
+          sync_status = 'SYNCED', last_synced_at = ?, updated_at = ?
+         WHERE id = ?`,
+                [
+                    despesa.dataDespesa,
+                    despesa.dataVencimento || null,
+                    despesa.valor,
+                    despesa.categoria,
+                    despesa.descricao,
+                    despesa.pagoAgora ? 1 : 0,
+                    despesa.meioPagamento || null,
+                    despesa.cartaoId || null,
+                    now,
+                    now,
+                    existing.id
+                ]
+            );
+            return (await this.getById(existing.id))!;
+        } else {
+            const localId = uuidv4();
+            const id = await databaseService.runInsert(
+                `INSERT INTO despesas (
+          local_id, server_id, version, data_despesa, data_vencimento,
+          valor, categoria, descricao, pago_agora, meio_pagamento, cartao_id,
+          sync_status, last_synced_at, updated_at, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SYNCED', ?, ?, ?)`,
+                [
+                    localId,
+                    despesa.id,
+                    1,
+                    despesa.dataDespesa,
+                    despesa.dataVencimento || null,
+                    despesa.valor,
+                    despesa.categoria,
+                    despesa.descricao,
+                    despesa.pagoAgora ? 1 : 0,
+                    despesa.meioPagamento || null,
+                    despesa.cartaoId || null,
+                    now,
+                    now,
+                    now
+                ]
+            );
+            return (await this.getById(id))!;
+        }
     },
 
     /**

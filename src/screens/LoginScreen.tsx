@@ -1,17 +1,20 @@
-import React, { useState } from 'react';
-import { View, Text, TouchableOpacity, KeyboardAvoidingView, Platform, Alert } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { View, Text, TouchableOpacity, KeyboardAvoidingView, Platform, Alert, Modal } from 'react-native';
 import { useAuth } from '../contexts/AuthContext';
-import { Lock, Mail, Eye, EyeOff } from 'lucide-react-native';
+import { Lock, Mail, Eye, EyeOff, Fingerprint } from 'lucide-react-native';
 import { Button, Input, Card } from '../components/ui';
 import { theme } from '../theme';
 
 export const LoginScreen = () => {
-    const { signIn } = useAuth();
+    const { signIn, signInWithBiometric, biometricAvailable, biometricEnabled, toggleBiometric, completeSignIn } = useAuth();
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [showPassword, setShowPassword] = useState(false);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [showBiometricDialog, setShowBiometricDialog] = useState(false);
+    const [lastCredentials, setLastCredentials] = useState<{ email: string; password: string } | null>(null);
+    const [pendingUserData, setPendingUserData] = useState<any>(null); // UserData esperando conclusão do dialog
 
     const handleLogin = async () => {
         if (!email || !password) {
@@ -22,9 +25,28 @@ export const LoginScreen = () => {
         try {
             setLoading(true);
             setError(null);
-            await signIn({ email, password });
+
+            console.log('🔑 [LoginScreen] Attempting login...');
+            console.log('🔑 [LoginScreen] biometricAvailable:', biometricAvailable);
+            console.log('🔑 [LoginScreen] biometricEnabled:', biometricEnabled);
+
+            const userData = await signIn({ email, password });
+
+            console.log('🔑 [LoginScreen] Login successful, checking biometric dialog...');
+
+            // Se login bem-sucedido e biometria disponível mas não habilitada, perguntar
+            if (biometricAvailable && !biometricEnabled) {
+                console.log('🔑 [LoginScreen] Showing biometric dialog!');
+                setLastCredentials({ email, password });
+                setPendingUserData(userData); // Armazena userData
+                setShowBiometricDialog(true); // Mostra dialog
+            } else {
+                console.log('🔑 [LoginScreen] NOT showing dialog - available:', biometricAvailable, 'enabled:', biometricEnabled);
+                console.log('🔑 [LoginScreen] Completing sign-in immediately');
+                completeSignIn(userData); // Completa login imediatamente
+            }
         } catch (err: any) {
-            console.error(err);
+            console.error('🔑 [LoginScreen] Login failed:', err);
             if (err.response?.status === 401) {
                 setError('Credenciais inválidas. ACESSO NEGADO.');
             } else if (err.response?.status === 429) {
@@ -34,6 +56,56 @@ export const LoginScreen = () => {
             }
         } finally {
             setLoading(false);
+        }
+    };
+
+    const handleBiometricLogin = async () => {
+        try {
+            setLoading(true);
+            setError(null);
+            await signInWithBiometric();
+        } catch (err: any) {
+            console.error(err);
+            setError('Falha na autenticação biométrica. Use email e senha.');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleEnableBiometric = async () => {
+        if (!lastCredentials) return;
+
+        try {
+            console.log('🔑 [LoginScreen] User accepted biometric, enabling...');
+            await toggleBiometric(true, lastCredentials);
+            setShowBiometricDialog(false);
+            Alert.alert('Sucesso', 'Autenticação biométrica habilitada!');
+
+            // Completa o login após habilitar biometria
+            if (pendingUserData) {
+                console.log('🔑 [LoginScreen] Completing sign-in after enabling biometric');
+                completeSignIn(pendingUserData);
+            }
+        } catch (err: any) {
+            console.error('🔑 [LoginScreen] Failed to enable biometric:', err);
+            Alert.alert('Erro', 'Não foi possível habilitar a biometria.');
+
+            // Completa o login mesmo se habilitar biometria falhou
+            if (pendingUserData) {
+                console.log('🔑 [LoginScreen] Completing sign-in despite biometric error');
+                completeSignIn(pendingUserData);
+            }
+        }
+    };
+
+    const handleDeclineBiometric = () => {
+        console.log('🔑 [LoginScreen] User declined biometric');
+        setShowBiometricDialog(false);
+
+        // Completa o login quando usuário recusa biometria
+        if (pendingUserData) {
+            console.log('🔑 [LoginScreen] Completing sign-in after user declined');
+            completeSignIn(pendingUserData);
         }
     };
 
@@ -96,7 +168,7 @@ export const LoginScreen = () => {
                         marginTop: 4,
                     }}
                 >
-                    V2.4.0 // SECURE_ACCESS
+                    V2.5.0 // BIOMETRIC_AUTH
                 </Text>
             </View>
 
@@ -118,6 +190,50 @@ export const LoginScreen = () => {
                             ERRO_CRÍTICO:
                         </Text>
                         <Text style={{ color: theme.colors.error, fontSize: 12 }}>{error}</Text>
+                    </View>
+                )}
+
+                {/* Biometric Button - mostrar se habilitado */}
+                {biometricEnabled && (
+                    <TouchableOpacity
+                        onPress={handleBiometricLogin}
+                        disabled={loading}
+                        style={{
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            paddingVertical: 20,
+                            marginBottom: 20,
+                            borderWidth: 1,
+                            borderColor: theme.colors.primary,
+                            borderRadius: 8,
+                            backgroundColor: theme.colors.primaryMuted,
+                        }}
+                    >
+                        <Fingerprint size={48} color={theme.colors.primary} />
+                        <Text style={{
+                            color: theme.colors.primary,
+                            fontSize: 12,
+                            marginTop: 8,
+                            fontWeight: '600',
+                            letterSpacing: 1
+                        }}>
+                            AUTENTICAR COM BIOMETRIA
+                        </Text>
+                    </TouchableOpacity>
+                )}
+
+                {biometricEnabled && (
+                    <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 20 }}>
+                        <View style={{ flex: 1, height: 1, backgroundColor: theme.colors.border }} />
+                        <Text style={{
+                            marginHorizontal: 12,
+                            color: theme.colors.textMuted,
+                            fontSize: 10,
+                            letterSpacing: 1
+                        }}>
+                            OU USE EMAIL/SENHA
+                        </Text>
+                        <View style={{ flex: 1, height: 1, backgroundColor: theme.colors.border }} />
                     </View>
                 )}
 
@@ -185,6 +301,65 @@ export const LoginScreen = () => {
                     ACESSO RESTRITO A PESSOAL AUTORIZADO
                 </Text>
             </Card>
+
+            {/* Dialog para habilitar biometria */}
+            <Modal
+                visible={showBiometricDialog}
+                transparent
+                animationType="fade"
+                onRequestClose={handleDeclineBiometric}
+            >
+                <View style={{
+                    flex: 1,
+                    backgroundColor: 'rgba(0,0,0,0.8)',
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    padding: 24
+                }}>
+                    <Card style={{ width: '100%', maxWidth: 360 }}>
+                        <View style={{ alignItems: 'center', marginBottom: 20 }}>
+                            <Fingerprint size={64} color={theme.colors.primary} />
+                        </View>
+
+                        <Text style={{
+                            fontSize: 18,
+                            fontWeight: 'bold',
+                            color: theme.colors.text,
+                            textAlign: 'center',
+                            marginBottom: 12
+                        }}>
+                            Habilitar Biometria?
+                        </Text>
+
+                        <Text style={{
+                            fontSize: 14,
+                            color: theme.colors.textSecondary,
+                            textAlign: 'center',
+                            marginBottom: 24,
+                            lineHeight: 20
+                        }}>
+                            Acesse o app rapidamente usando sua impressão digital ou reconhecimento facial.
+                        </Text>
+
+                        <Button onPress={handleEnableBiometric} style={{ marginBottom: 12 }}>
+                            HABILITAR
+                        </Button>
+
+                        <TouchableOpacity
+                            onPress={handleDeclineBiometric}
+                            style={{ padding: 12, alignItems: 'center' }}
+                        >
+                            <Text style={{
+                                color: theme.colors.textMuted,
+                                fontSize: 12,
+                                letterSpacing: 1
+                            }}>
+                                AGORA NÃO
+                            </Text>
+                        </TouchableOpacity>
+                    </Card>
+                </View>
+            </Modal>
         </KeyboardAvoidingView>
     );
 };
