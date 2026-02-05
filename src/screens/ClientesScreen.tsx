@@ -7,6 +7,8 @@ import { Search, Phone, Mail, MapPin, User, Plus } from 'lucide-react-native';
 import { theme } from '../theme';
 import { Card, Badge } from '../components/ui';
 import { clienteService } from '../services/clienteService';
+import { ClienteModel } from '../services/database/models/ClienteModel';
+import { SyncService } from '../services/SyncService';
 import { Cliente } from '../types';
 
 export const ClientesScreen = () => {
@@ -17,11 +19,24 @@ export const ClientesScreen = () => {
 
     const fetchClientes = async () => {
         try {
-            setLoading(true);
-            const data = await clienteService.getAll();
-            setClientes(data);
+            // Offline First: Ler do banco local
+            const localData = await ClienteModel.getAll();
+            const formattedData = localData.map(c => ClienteModel.toApiFormat(c));
+            setClientes(formattedData);
         } catch (error) {
-            console.error('Failed to load clients:', error);
+            console.error('Failed to load clients from DB:', error);
+        }
+    };
+
+    const handleRefresh = async () => {
+        setLoading(true);
+        try {
+            // Sync: PULL do servidor para o banco local
+            await SyncService.syncClientes();
+            // Recarregar do banco
+            await fetchClientes();
+        } catch (error) {
+            console.error('Sync failed:', error);
         } finally {
             setLoading(false);
         }
@@ -173,7 +188,7 @@ export const ClientesScreen = () => {
                 refreshControl={
                     <RefreshControl
                         refreshing={loading}
-                        onRefresh={fetchClientes}
+                        onRefresh={handleRefresh}
                         tintColor={theme.colors.primary}
                     />
                 }

@@ -14,17 +14,23 @@ export const MyCommissionsScreen = () => {
     const [comissao, setComissao] = useState<ComissaoCalculada | null>(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [notEligible, setNotEligible] = useState(false);
 
     const fetchComissao = async () => {
         try {
             setLoading(true);
             setError(null);
+            setNotEligible(false);
             const data = await comissaoService.obterComissaoMensal(ano, mes);
             setComissao(data);
         } catch (err: any) {
             console.error('Failed to load commission:', err);
             setComissao(null);
-            if (err.response?.status !== 404) {
+
+            if (err.response?.status === 400) {
+                // Usuário não participa de comissão
+                setNotEligible(true);
+            } else if (err.response?.status !== 404) {
                 setError('Falha ao carregar dados.');
             }
         } finally {
@@ -160,6 +166,50 @@ export const MyCommissionsScreen = () => {
                             Descriptografando fluxos seguros...
                         </Text>
                     </View>
+                ) : notEligible ? (
+                    <Card style={{ backgroundColor: 'rgba(0,0,0,0.4)', padding: 32 }}>
+                        <View style={{ alignItems: 'center' }}>
+                            <View style={{
+                                width: 64,
+                                height: 64,
+                                borderRadius: 32,
+                                backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                marginBottom: 24,
+                                borderWidth: 1,
+                                borderColor: theme.colors.border
+                            }}>
+                                <Percent size={24} color={theme.colors.textMuted} style={{ opacity: 0.5 }} />
+                            </View>
+
+                            <Text style={{
+                                color: theme.colors.textSecondary,
+                                fontSize: 13,
+                                fontWeight: '900',
+                                letterSpacing: 2,
+                                marginBottom: 12,
+                                textAlign: 'center'
+                            }}>
+                                SISTEMA_NÃO_HABILITADO
+                            </Text>
+
+                            <Text style={{
+                                color: theme.colors.textMuted,
+                                fontSize: 11,
+                                textAlign: 'center',
+                                lineHeight: 20,
+                                maxWidth: '80%'
+                            }}>
+                                Este perfil não está configurado para participar do programa de comissões e bonificações.
+                            </Text>
+
+                            <View style={{ marginTop: 24, flexDirection: 'row', alignItems: 'center' }}>
+                                <View style={{ width: 4, height: 4, borderRadius: 2, backgroundColor: theme.colors.primaryMuted, marginRight: 8 }} />
+                                <Text style={{ color: theme.colors.textMuted, fontSize: 9 }}>STATUS: OPERACIONAL</Text>
+                            </View>
+                        </View>
+                    </Card>
                 ) : comissao ? (
                     <Card>
                         {/* Header - Refactored to stacking for better space management */}

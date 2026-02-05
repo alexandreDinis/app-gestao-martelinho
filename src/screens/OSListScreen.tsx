@@ -31,6 +31,14 @@ export const OSListScreen = () => {
     const [osDate, setOsDate] = useState(new Date().toISOString().split('T')[0]);
     const [osVencimento, setOsVencimento] = useState(new Date().toISOString().split('T')[0]);
     const [isCreating, setIsCreating] = useState(false);
+    const [modalSearchTerm, setModalSearchTerm] = useState('');
+
+    const filteredModalClientes = useMemo(() => {
+        return clientes.filter(c =>
+            c.nomeFantasia?.toLowerCase().includes(modalSearchTerm.toLowerCase()) ||
+            c.razaoSocial?.toLowerCase().includes(modalSearchTerm.toLowerCase())
+        );
+    }, [clientes, modalSearchTerm]);
 
     const fetchOrdens = async () => {
         try {
@@ -141,7 +149,7 @@ export const OSListScreen = () => {
 
                     {/* Info */}
                     <View style={{ flex: 1, paddingRight: 8, justifyContent: 'center' }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 6 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
                             <User size={12} color={theme.colors.primary} />
                             <Text style={{ color: theme.colors.textWhite, fontSize: 15, fontWeight: '700', marginLeft: 6 }} numberOfLines={1}>
                                 {item.cliente?.nomeFantasia}
@@ -151,6 +159,12 @@ export const OSListScreen = () => {
                             {item.cliente?.razaoSocial}
                         </Text>
                         <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                            <OSStatusBadge status={item.status} />
+                            {item.atrasado && (
+                                <View style={{ backgroundColor: 'rgba(239, 68, 68, 0.2)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
+                                    <Text style={{ color: theme.colors.error, fontSize: 8, fontWeight: '700' }}>ATRASADO</Text>
+                                </View>
+                            )}
                             <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                                 <Calendar size={12} color={theme.colors.textMuted} />
                                 <Text style={{ color: theme.colors.textSecondary, fontSize: 11, marginLeft: 4 }}>{formatDate(item.data)}</Text>
@@ -164,16 +178,8 @@ export const OSListScreen = () => {
                     </View>
 
                     {/* Right side */}
-                    <View style={{ alignItems: 'flex-end' }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
-                            <OSStatusBadge status={item.status} />
-                            {item.atrasado && (
-                                <View style={{ backgroundColor: 'rgba(239, 68, 68, 0.2)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, marginLeft: 4 }}>
-                                    <Text style={{ color: theme.colors.error, fontSize: 8, fontWeight: '700' }}>ATRASADO</Text>
-                                </View>
-                            )}
-                        </View>
-                        <Text style={{ color: theme.colors.textMuted, fontSize: 9, letterSpacing: 1 }}>VALOR TOTAL</Text>
+                    <View style={{ alignItems: 'flex-end', justifyContent: 'center', minHeight: 60 }}>
+                        <Text style={{ color: theme.colors.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 2 }}>VALOR TOTAL</Text>
                         {item.valorDesconto && item.valorDesconto > 0 ? (
                             <>
                                 <Text style={{ color: theme.colors.textMuted, fontSize: 10, textDecorationLine: 'line-through' }}>
@@ -343,23 +349,55 @@ export const OSListScreen = () => {
 
                         {/* Client Selector */}
                         <Text style={{ color: theme.colors.primary, fontSize: 10, fontWeight: '700', letterSpacing: 1, marginBottom: 8 }}>CLIENTE</Text>
-                        <View style={{ backgroundColor: 'rgba(0,0,0,0.4)', borderWidth: 1, borderColor: theme.colors.border, marginBottom: 16 }}>
-                            <ScrollView style={{ maxHeight: 150 }}>
-                                {clientes.map(c => (
-                                    <TouchableOpacity
-                                        key={c.id}
-                                        onPress={() => setSelectedClientId(c.id)}
-                                        style={{
-                                            padding: 12,
-                                            borderBottomWidth: 1,
-                                            borderBottomColor: theme.colors.border,
-                                            backgroundColor: selectedClientId === c.id ? theme.colors.primaryMuted : 'transparent',
-                                        }}
-                                    >
-                                        <Text style={{ color: theme.colors.text, fontWeight: '600' }}>{c.nomeFantasia}</Text>
-                                        <Text style={{ color: theme.colors.textMuted, fontSize: 11 }}>{c.razaoSocial}</Text>
-                                    </TouchableOpacity>
-                                ))}
+
+                        {/* Search Input */}
+                        <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.4)', borderWidth: 1, borderColor: theme.colors.border, borderRadius: 4, marginBottom: 8, paddingHorizontal: 8 }}>
+                            <Search size={14} color={theme.colors.textMuted} />
+                            <TextInput
+                                placeholder="Buscar cliente..."
+                                placeholderTextColor={theme.colors.textMuted}
+                                value={modalSearchTerm}
+                                onChangeText={setModalSearchTerm}
+                                style={{ flex: 1, color: theme.colors.text, paddingVertical: 8, paddingHorizontal: 8, fontSize: 12 }}
+                            />
+                        </View>
+
+                        <View style={{ backgroundColor: 'rgba(0,0,0,0.2)', borderWidth: 1, borderColor: theme.colors.border, marginBottom: 16, borderRadius: 4, height: 180 }}>
+                            <ScrollView nestedScrollEnabled showsVerticalScrollIndicator={true}>
+                                {filteredModalClientes.length === 0 ? (
+                                    <View style={{ padding: 16, alignItems: 'center' }}>
+                                        <Text style={{ color: theme.colors.textMuted, fontSize: 11 }}>Nenhum cliente encontrado</Text>
+                                    </View>
+                                ) : (
+                                    filteredModalClientes.map(c => {
+                                        const isSelected = selectedClientId === c.id;
+                                        return (
+                                            <TouchableOpacity
+                                                key={c.id}
+                                                onPress={() => setSelectedClientId(c.id)}
+                                                style={{
+                                                    flexDirection: 'row',
+                                                    alignItems: 'center',
+                                                    justifyContent: 'space-between',
+                                                    padding: 12,
+                                                    borderBottomWidth: 1,
+                                                    borderBottomColor: 'rgba(255,255,255,0.05)',
+                                                    backgroundColor: isSelected ? 'rgba(212, 175, 55, 0.15)' : 'transparent',
+                                                }}
+                                            >
+                                                <View style={{ flex: 1 }}>
+                                                    <Text style={{ color: isSelected ? theme.colors.primary : theme.colors.text, fontWeight: isSelected ? '700' : '500', fontSize: 13 }}>{c.nomeFantasia}</Text>
+                                                    {c.razaoSocial && (
+                                                        <Text style={{ color: theme.colors.textMuted, fontSize: 10, marginTop: 2 }}>{c.razaoSocial}</Text>
+                                                    )}
+                                                </View>
+                                                {isSelected && (
+                                                    <CheckCircle size={16} color={theme.colors.primary} />
+                                                )}
+                                            </TouchableOpacity>
+                                        );
+                                    })
+                                )}
                             </ScrollView>
                         </View>
 
