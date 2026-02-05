@@ -14,6 +14,8 @@ import { CreateOSScreen } from './src/screens/CreateOSScreen';
 import { ClientFormScreen } from './src/screens/ClientFormScreen';
 import { RootStackParamList } from './src/navigation/types';
 import { theme } from './src/theme';
+import { NetworkStatusIndicator } from './src/components/NetworkStatusIndicator';
+import { Logger } from './src/services/Logger';
 
 const Stack = createStackNavigator<RootStackParamList>();
 
@@ -44,9 +46,15 @@ function AppRoutes() {
 export default function App() {
   return (
     <SafeAreaProvider>
-      <NavigationContainer>
+      <NavigationContainer
+        onStateChange={(state) => {
+          const currentRouteName = state?.routes[state.index].name;
+          Logger.info(`Navigation: Navigated to ${currentRouteName}`, state);
+        }}
+      >
         <AuthProvider>
           <StatusBar style="light" backgroundColor={theme.colors.background} />
+          <NetworkStatusIndicator />
           <AppRoutes />
         </AuthProvider>
       </NavigationContainer>

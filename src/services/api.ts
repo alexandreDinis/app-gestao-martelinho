@@ -13,10 +13,15 @@ const api = axios.create({
     },
 });
 
+import { Logger } from './Logger';
+
 // Request Interceptor
 api.interceptors.request.use(
     async (config) => {
         try {
+            // Log Request
+            Logger.info(`API Request: ${config.method?.toUpperCase()} ${config.url}`, config.data);
+
             const userStr = await AsyncStorage.getItem('user');
             if (userStr) {
                 const user = JSON.parse(userStr);
@@ -25,26 +30,33 @@ api.interceptors.request.use(
                 }
             }
         } catch (error) {
-            console.error("Error retrieving token:", error);
+            Logger.error("Error retrieving token:", error);
         }
         return config;
     },
     (error) => {
+        Logger.error("API Request Error:", error);
         return Promise.reject(error);
     }
 );
 
 // Response Interceptor
 api.interceptors.response.use(
-    (response) => response,
+    (response) => {
+        Logger.info(`API Response: ${response.status} ${response.config.url}`, response.data);
+        return response;
+    },
     async (error) => {
         if (error.response) {
+            Logger.error(`API Error: ${error.response.status} ${error.config?.url}`, error.response.data);
             if (error.response.status === 401) {
-                console.warn("[API] 401 Unauthorized - Token invalid/expired");
+                Logger.warn("[API] 401 Unauthorized - Token invalid/expired");
                 // In React Native, we can't just redirect via window.location.
                 // We should clear storage so the App's AuthState updates on next check.
                 await AsyncStorage.removeItem('user');
             }
+        } else {
+            Logger.error("API Network Error:", error.message);
         }
         return Promise.reject(error);
     }

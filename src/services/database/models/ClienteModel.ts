@@ -67,15 +67,17 @@ export const ClienteModel = {
     async create(data: ClienteRequest, syncStatus: SyncStatus = 'PENDING_CREATE'): Promise<LocalCliente> {
         const now = Date.now();
         const localId = uuidv4();
+        const uuid = localId; // Usando localId como UUID por enquanto ou gerando outro se necessário. O prompt pediu "Adicione colunas... uuid". Vamos usar o mesmo valor de local_id por consistência inicial.
 
         const id = await databaseService.runInsert(
             `INSERT INTO clientes (
-        local_id, server_id, version, razao_social, nome_fantasia, cnpj, cpf,
+        local_id, uuid, server_id, version, razao_social, nome_fantasia, cnpj, cpf,
         tipo_pessoa, contato, email, status, logradouro, numero, complemento,
         bairro, cidade, estado, cep, sync_status, updated_at, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
                 localId,
+                uuid,
                 null, // server_id
                 1, // version
                 data.razaoSocial,
@@ -149,14 +151,17 @@ export const ClienteModel = {
         } else {
             // Inserir novo
             const localId = uuidv4();
+            const uuid = localId; // Usando localId como UUID
+
             const id = await databaseService.runInsert(
                 `INSERT INTO clientes (
-          local_id, server_id, version, razao_social, nome_fantasia, cnpj, cpf,
+          local_id, uuid, server_id, version, razao_social, nome_fantasia, cnpj, cpf,
           tipo_pessoa, contato, email, status, logradouro, numero, complemento,
           bairro, cidade, estado, cep, sync_status, last_synced_at, updated_at, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SYNCED', ?, ?, ?)`,
                 [
                     localId,
+                    uuid,
                     cliente.id,
                     1,
                     cliente.razaoSocial,
@@ -321,24 +326,24 @@ export const ClienteModel = {
     async addToSyncQueue(localId: string, operation: 'CREATE' | 'UPDATE' | 'DELETE', payload: any): Promise<void> {
         const now = Date.now();
 
-        // Verificar se já existe na fila
+        // Verificar se já existe na fila (usando novo schema)
         const existing = await databaseService.getFirst<{ id: number }>(
-            `SELECT id FROM sync_queue WHERE entity_type = 'cliente' AND entity_local_id = ?`,
+            `SELECT id FROM sync_queue WHERE resource = 'cliente' AND temp_id = ? AND status = 'PENDING'`,
             [localId]
         );
 
         if (existing) {
             // Atualizar operação existente
             await databaseService.runUpdate(
-                `UPDATE sync_queue SET operation = ?, payload = ?, created_at = ? WHERE id = ?`,
+                `UPDATE sync_queue SET action = ?, payload = ?, created_at = ?, attempts = 0 WHERE id = ?`,
                 [operation, payload ? JSON.stringify(payload) : null, now, existing.id]
             );
         } else {
             // Inserir nova
             await databaseService.runInsert(
-                `INSERT INTO sync_queue (entity_type, entity_local_id, operation, payload, priority, created_at)
-         VALUES ('cliente', ?, ?, ?, ?, ?)`,
-                [localId, operation, payload ? JSON.stringify(payload) : null, SYNC_PRIORITIES.HIGH, now]
+                `INSERT INTO sync_queue (resource, temp_id, action, payload, status, created_at, attempts)
+          VALUES ('cliente', ?, ?, ?, 'PENDING', ?, 0)`,
+                [localId, operation, payload ? JSON.stringify(payload) : null, now]
             );
         }
     },
