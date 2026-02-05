@@ -18,6 +18,8 @@
     "axios": "^1.13.3",
     "clsx": "^2.1.1",
     "expo": "~54.0.33",
+    "expo-local-authentication": "~17.0.8",
+    "expo-secure-store": "~15.0.8",
     "expo-sqlite": "~16.0.10",
     "expo-status-bar": "~3.0.9",
     "lucide-react-native": "^0.563.0",

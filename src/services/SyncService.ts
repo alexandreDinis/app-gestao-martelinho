@@ -91,9 +91,14 @@ export const SyncService = {
     // --- Helpers de Item Individual ---
 
     async syncClienteItem(action: string, localId: string, payload: any): Promise<number | null> {
+        console.log(`[SyncService] Syncing cliente: ${action}`, { localId });
+
         if (action === 'CREATE') {
-            const created = await clienteService.create(payload);
-            return created.id;
+            // Chamar API diretamente (não usar clienteService.create que tem lógica offline)
+            const api = (await import('./api')).default;
+            const response = await api.post('/clientes', payload);
+            console.log(`[SyncService] Cliente created on server`, { serverId: response.data.id });
+            return response.data.id;
         } else if (action === 'UPDATE') {
             // Precisamos do ID do servidor. O payload pode ter ou buscaremos pelo localId
             const localCliente = await ClienteModel.getByLocalId(localId);
@@ -113,9 +118,14 @@ export const SyncService = {
     },
 
     async syncOSItem(action: string, localId: string, payload: any): Promise<number | null> {
+        console.log(`[SyncService] Syncing OS: ${action}`, { localId });
+
         if (action === 'CREATE') {
-            const created = await osService.createOS(payload);
-            return created.id;
+            // Chamar API diretamente (não usar osService.createOS que tem lógica offline)
+            const api = (await import('./api')).default;
+            const response = await api.post('/ordens-servico', payload);
+            console.log(`[SyncService] OS created on server`, { serverId: response.data.id });
+            return response.data.id;
         } else if (action === 'UPDATE') {
             const localOS = await OSModel.getByLocalId(localId);
             if (!localOS?.server_id) throw new Error('OS sem server_id para update');

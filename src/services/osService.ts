@@ -1,5 +1,6 @@
 import api from './api';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import NetInfo from '@react-native-community/netinfo';
+import * as SecureStore from 'expo-secure-store';
 import { Linking } from 'react-native';
 import type {
     Cliente, ClienteRequest, ClienteFiltros,
@@ -7,6 +8,8 @@ import type {
     AddVeiculoRequest, AddPecaRequest, UpdateOSStatusRequest,
     VeiculoOS, OSStatus
 } from '../types';
+import { OSModel } from './database/models/OSModel';
+import { Logger } from './Logger';
 
 export const osService = {
     // --- Clients ---
@@ -22,9 +25,67 @@ export const osService = {
     },
 
     // --- Ordem de Serviço (Core) ---
+    /**
+     * Criar OS com suporte offline-first
+     * - Se online: tenta criar na API e salva localmente
+     * - Se offline: salva localmente (incluindo hierarquia) e adiciona à fila
+     */
     createOS: async (data: CreateOSRequest): Promise<OrdemServico> => {
-        const response = await api.post<OrdemServico>('/ordens-servico', data);
-        return response.data;
+        Logger.info('[OSService] Creating OS', { clienteId: data.clienteId, data: data.data });
+
+        // Verificar conectividade
+        const netState = await NetInfo.fetch();
+        const isOnline = netState.isConnected && netState.isInternetReachable;
+
+        Logger.debug('[OSService] Network status', { isOnline });
+
+        if (isOnline) {
+            // Tentar criar na API primeiro
+            try {
+                Logger.info('[OSService] Attempting API create (online mode)');
+                const response = await api.post<OrdemServico>('/ordens-servico', data);
+
+                // Salvar no cache local como SYNCED
+                await OSModel.upsertFromServer(response.data);
+
+                Logger.info('[OSService] OS created successfully via API', { id: response.data.id });
+                return response.data;
+            } catch (error) {
+                Logger.warn('[OSService] API create failed, falling back to offline mode', error);
+                // Se falhar, continua para modo offline
+            }
+        }
+
+        // Modo offline: salvar localmente e adicionar à fila
+        Logger.info('[OSService] Creating OS in offline mode');
+        const localOS = await OSModel.create(data, 'PENDING_CREATE');
+
+        Logger.info('[OSService] OS created locally', {
+            localId: localOS.local_id,
+            queuedForSync: true
+        });
+
+        // Converter para formato da API para retornar
+        // Note: veiculos virão vazios pois ainda não foram adicionados
+        return {
+            id: localOS.id, // ID local temporário
+            data: localOS.data,
+            status: localOS.status as OSStatus,
+            cliente: {} as any, // Será resolvido quando necessário
+            valorTotal: localOS.valor_total || 0,
+            veiculos: [],
+            tipoDesconto: localOS.tipo_desconto as any,
+            valorDesconto: localOS.valor_desconto || undefined,
+            valorTotalSemDesconto: localOS.valor_total || 0,
+            valorTotalComDesconto: localOS.valor_total || 0,
+            dataVencimento: localOS.data_vencimento || undefined,
+            atrasado: false,
+            usuarioId: 0,
+            usuarioNome: undefined,
+            usuarioEmail: '',
+            deletedAt: null,
+            updatedAt: new Date(localOS.updated_at).toISOString()
+        };
     },
 
     listOS: async (): Promise<OrdemServico[]> => {
@@ -57,7 +118,7 @@ export const osService = {
     // --- PDF Sharing ---
     openOSPdf: async (osId: number) => {
         try {
-            const userStr = await AsyncStorage.getItem('user');
+            const userStr = await SecureStore.getItemAsync('user');
             const token = userStr ? JSON.parse(userStr).token : null;
 
             // Construct URL matching the backend structure
