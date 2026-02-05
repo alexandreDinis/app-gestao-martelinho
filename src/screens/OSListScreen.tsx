@@ -31,6 +31,14 @@ export const OSListScreen = () => {
     const [osDate, setOsDate] = useState(new Date().toISOString().split('T')[0]);
     const [osVencimento, setOsVencimento] = useState(new Date().toISOString().split('T')[0]);
     const [isCreating, setIsCreating] = useState(false);
+    const [modalSearchTerm, setModalSearchTerm] = useState('');
+
+    const filteredModalClientes = useMemo(() => {
+        return clientes.filter(c =>
+            c.nomeFantasia?.toLowerCase().includes(modalSearchTerm.toLowerCase()) ||
+            c.razaoSocial?.toLowerCase().includes(modalSearchTerm.toLowerCase())
+        );
+    }, [clientes, modalSearchTerm]);
 
     const fetchOrdens = async () => {
         try {
@@ -341,23 +349,55 @@ export const OSListScreen = () => {
 
                         {/* Client Selector */}
                         <Text style={{ color: theme.colors.primary, fontSize: 10, fontWeight: '700', letterSpacing: 1, marginBottom: 8 }}>CLIENTE</Text>
-                        <View style={{ backgroundColor: 'rgba(0,0,0,0.4)', borderWidth: 1, borderColor: theme.colors.border, marginBottom: 16 }}>
-                            <ScrollView style={{ maxHeight: 150 }}>
-                                {clientes.map(c => (
-                                    <TouchableOpacity
-                                        key={c.id}
-                                        onPress={() => setSelectedClientId(c.id)}
-                                        style={{
-                                            padding: 12,
-                                            borderBottomWidth: 1,
-                                            borderBottomColor: theme.colors.border,
-                                            backgroundColor: selectedClientId === c.id ? theme.colors.primaryMuted : 'transparent',
-                                        }}
-                                    >
-                                        <Text style={{ color: theme.colors.text, fontWeight: '600' }}>{c.nomeFantasia}</Text>
-                                        <Text style={{ color: theme.colors.textMuted, fontSize: 11 }}>{c.razaoSocial}</Text>
-                                    </TouchableOpacity>
-                                ))}
+
+                        {/* Search Input */}
+                        <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.4)', borderWidth: 1, borderColor: theme.colors.border, borderRadius: 4, marginBottom: 8, paddingHorizontal: 8 }}>
+                            <Search size={14} color={theme.colors.textMuted} />
+                            <TextInput
+                                placeholder="Buscar cliente..."
+                                placeholderTextColor={theme.colors.textMuted}
+                                value={modalSearchTerm}
+                                onChangeText={setModalSearchTerm}
+                                style={{ flex: 1, color: theme.colors.text, paddingVertical: 8, paddingHorizontal: 8, fontSize: 12 }}
+                            />
+                        </View>
+
+                        <View style={{ backgroundColor: 'rgba(0,0,0,0.2)', borderWidth: 1, borderColor: theme.colors.border, marginBottom: 16, borderRadius: 4, height: 180 }}>
+                            <ScrollView nestedScrollEnabled showsVerticalScrollIndicator={true}>
+                                {filteredModalClientes.length === 0 ? (
+                                    <View style={{ padding: 16, alignItems: 'center' }}>
+                                        <Text style={{ color: theme.colors.textMuted, fontSize: 11 }}>Nenhum cliente encontrado</Text>
+                                    </View>
+                                ) : (
+                                    filteredModalClientes.map(c => {
+                                        const isSelected = selectedClientId === c.id;
+                                        return (
+                                            <TouchableOpacity
+                                                key={c.id}
+                                                onPress={() => setSelectedClientId(c.id)}
+                                                style={{
+                                                    flexDirection: 'row',
+                                                    alignItems: 'center',
+                                                    justifyContent: 'space-between',
+                                                    padding: 12,
+                                                    borderBottomWidth: 1,
+                                                    borderBottomColor: 'rgba(255,255,255,0.05)',
+                                                    backgroundColor: isSelected ? 'rgba(212, 175, 55, 0.15)' : 'transparent',
+                                                }}
+                                            >
+                                                <View style={{ flex: 1 }}>
+                                                    <Text style={{ color: isSelected ? theme.colors.primary : theme.colors.text, fontWeight: isSelected ? '700' : '500', fontSize: 13 }}>{c.nomeFantasia}</Text>
+                                                    {c.razaoSocial && (
+                                                        <Text style={{ color: theme.colors.textMuted, fontSize: 10, marginTop: 2 }}>{c.razaoSocial}</Text>
+                                                    )}
+                                                </View>
+                                                {isSelected && (
+                                                    <CheckCircle size={16} color={theme.colors.primary} />
+                                                )}
+                                            </TouchableOpacity>
+                                        );
+                                    })
+                                )}
                             </ScrollView>
                         </View>
 

@@ -103,7 +103,9 @@ export const SyncService = {
         } else if (action === 'DELETE') {
             const localCliente = await ClienteModel.getByLocalId(localId);
             if (localCliente?.server_id) {
-                await clienteService.delete(localCliente.server_id);
+                // TODO: Implement delete method in clienteService
+                // await clienteService.delete(localCliente.server_id);
+                console.warn('Cliente delete not implemented in API service');
             }
             return null;
         }
@@ -112,7 +114,7 @@ export const SyncService = {
 
     async syncOSItem(action: string, localId: string, payload: any): Promise<number | null> {
         if (action === 'CREATE') {
-            const created = await osService.create(payload);
+            const created = await osService.createOS(payload);
             return created.id;
         } else if (action === 'UPDATE') {
             const localOS = await OSModel.getByLocalId(localId);
@@ -166,7 +168,7 @@ export const SyncService = {
 
     async syncClientes(): Promise<void> {
         console.log('📥 Baixando Clientes...');
-        const clientes = await clienteService.listar();
+        const clientes = await clienteService.getAll();
         await ClienteModel.upsertBatch(clientes);
     },
 
@@ -178,7 +180,9 @@ export const SyncService = {
 
     async syncDespesas(): Promise<void> {
         console.log('📥 Baixando Despesas...');
-        const despesas = await despesaService.listar();
-        await DespesaModel.upsertBatch(despesas);
+        // TODO: Implement getAll/list method in despesaService
+        // const despesas = await despesaService.getAll();
+        // await DespesaModel.upsertBatch(despesas);
+        console.warn('Despesa sync not implemented - missing getAll method in despesaService');
     }
 };
