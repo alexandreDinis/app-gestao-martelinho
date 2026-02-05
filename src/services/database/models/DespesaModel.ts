@@ -1,0 +1,174 @@
+// src/services/database/models/DespesaModel.ts
+// Model para operações CRUD de Despesas no banco local
+
+import { databaseService } from '../DatabaseService';
+import { v4 as uuidv4 } from 'uuid';
+import { LocalDespesa, SYNC_PRIORITIES } from './types';
+
+export interface CreateDespesaLocal {
+    data: string;
+    valor: number;
+    categoria?: string;
+    descricao?: string;
+    pagoAgora?: boolean;
+    meioPagamento?: string;
+    dataVencimento?: string;
+    cartaoId?: number;
+}
+
+export const DespesaModel = {
+    /**
+     * Buscar todas as despesas locais
+     */
+    async getAll(): Promise<LocalDespesa[]> {
+        return await databaseService.runQuery<LocalDespesa>(
+            `SELECT * FROM despesas WHERE sync_status != 'PENDING_DELETE' ORDER BY data_despesa DESC`
+        );
+    },
+
+    /**
+     * Buscar despesa por ID
+     */
+    async getById(id: number): Promise<LocalDespesa | null> {
+        return await databaseService.getFirst<LocalDespesa>(
+            `SELECT * FROM despesas WHERE id = ?`,
+            [id]
+        );
+    },
+
+    /**
+     * Buscar despesas por período
+     */
+    async getByPeriod(startDate: string, endDate: string): Promise<LocalDespesa[]> {
+        return await databaseService.runQuery<LocalDespesa>(
+            `SELECT * FROM despesas 
+       WHERE data_despesa >= ? AND data_despesa <= ?
+       AND sync_status != 'PENDING_DELETE'
+       ORDER BY data_despesa DESC`,
+            [startDate, endDate]
+        );
+    },
+
+    /**
+     * Criar despesa local (sempre pendente de sync)
+     */
+    async create(data: CreateDespesaLocal): Promise<LocalDespesa> {
+        const now = Date.now();
+        const localId = uuidv4();
+
+        const id = await databaseService.runInsert(
+            `INSERT INTO despesas (
+        local_id, server_id, version, data_despesa, data_vencimento,
+        valor, categoria, descricao, pago_agora, meio_pagamento, cartao_id,
+        sync_status, updated_at, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_CREATE', ?, ?)`,
+            [
+                localId,
+                null,
+                1,
+                data.data,
+                data.dataVencimento || null,
+                data.valor,
+                data.categoria || null,
+                data.descricao || null,
+                data.pagoAgora ? 1 : 0,
+                data.meioPagamento || null,
+                data.cartaoId || null,
+                now,
+                now
+            ]
+        );
+
+        // Despesas têm prioridade CRÍTICA na sync
+        await this.addToSyncQueue(localId, 'CREATE', data);
+
+        return (await this.getById(id))!;
+    },
+
+    /**
+     * Obter despesas pendentes de sync
+     */
+    async getPendingSync(): Promise<LocalDespesa[]> {
+        return await databaseService.runQuery<LocalDespesa>(
+            `SELECT * FROM despesas WHERE sync_status IN ('PENDING_CREATE', 'PENDING_UPDATE', 'PENDING_DELETE')`
+        );
+    },
+
+    /**
+     * Marcar como sincronizada
+     */
+    async markAsSynced(localId: string, serverId: number): Promise<void> {
+        await databaseService.runUpdate(
+            `UPDATE despesas SET server_id = ?, sync_status = 'SYNCED', last_synced_at = ? WHERE local_id = ?`,
+            [serverId, Date.now(), localId]
+        );
+        await databaseService.runDelete(
+            `DELETE FROM sync_queue WHERE entity_type = 'despesa' AND entity_local_id = ?`,
+            [localId]
+        );
+    },
+
+    /**
+     * Marcar como erro
+     */
+    async markAsError(localId: string, errorMessage: string): Promise<void> {
+        await databaseService.runUpdate(
+            `UPDATE despesas SET sync_status = 'ERROR' WHERE local_id = ?`,
+            [localId]
+        );
+        await databaseService.runUpdate(
+            `UPDATE sync_queue SET error_message = ? WHERE entity_type = 'despesa' AND entity_local_id = ?`,
+            [errorMessage, localId]
+        );
+    },
+
+    /**
+     * Adicionar à fila de sync (prioridade crítica para despesas)
+     */
+    async addToSyncQueue(localId: string, operation: 'CREATE' | 'UPDATE' | 'DELETE', payload: any): Promise<void> {
+        const now = Date.now();
+
+        const existing = await databaseService.getFirst<{ id: number }>(
+            `SELECT id FROM sync_queue WHERE entity_type = 'despesa' AND entity_local_id = ?`,
+            [localId]
+        );
+
+        if (existing) {
+            await databaseService.runUpdate(
+                `UPDATE sync_queue SET operation = ?, payload = ?, created_at = ? WHERE id = ?`,
+                [operation, payload ? JSON.stringify(payload) : null, now, existing.id]
+            );
+        } else {
+            // PRIORIDADE CRÍTICA para despesas
+            await databaseService.runInsert(
+                `INSERT INTO sync_queue (entity_type, entity_local_id, operation, payload, priority, created_at)
+         VALUES ('despesa', ?, ?, ?, ?, ?)`,
+                [localId, operation, payload ? JSON.stringify(payload) : null, SYNC_PRIORITIES.CRITICAL, now]
+            );
+        }
+    },
+
+    /**
+     * Deletar despesa
+     */
+    async delete(id: number): Promise<boolean> {
+        const existing = await this.getById(id);
+        if (!existing) return false;
+
+        if (existing.server_id) {
+            await databaseService.runUpdate(
+                `UPDATE despesas SET sync_status = 'PENDING_DELETE', updated_at = ? WHERE id = ?`,
+                [Date.now(), id]
+            );
+            await this.addToSyncQueue(existing.local_id, 'DELETE', null);
+        } else {
+            await databaseService.runDelete(`DELETE FROM despesas WHERE id = ?`, [id]);
+            await databaseService.runDelete(
+                `DELETE FROM sync_queue WHERE entity_type = 'despesa' AND entity_local_id = ?`,
+                [existing.local_id]
+            );
+        }
+
+        return true;
+    }
+};
