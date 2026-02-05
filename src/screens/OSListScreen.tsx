@@ -141,7 +141,7 @@ export const OSListScreen = () => {
 
                     {/* Info */}
                     <View style={{ flex: 1, paddingRight: 8, justifyContent: 'center' }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 6 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
                             <User size={12} color={theme.colors.primary} />
                             <Text style={{ color: theme.colors.textWhite, fontSize: 15, fontWeight: '700', marginLeft: 6 }} numberOfLines={1}>
                                 {item.cliente?.nomeFantasia}
@@ -151,6 +151,12 @@ export const OSListScreen = () => {
                             {item.cliente?.razaoSocial}
                         </Text>
                         <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                            <OSStatusBadge status={item.status} />
+                            {item.atrasado && (
+                                <View style={{ backgroundColor: 'rgba(239, 68, 68, 0.2)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
+                                    <Text style={{ color: theme.colors.error, fontSize: 8, fontWeight: '700' }}>ATRASADO</Text>
+                                </View>
+                            )}
                             <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                                 <Calendar size={12} color={theme.colors.textMuted} />
                                 <Text style={{ color: theme.colors.textSecondary, fontSize: 11, marginLeft: 4 }}>{formatDate(item.data)}</Text>
@@ -164,16 +170,8 @@ export const OSListScreen = () => {
                     </View>
 
                     {/* Right side */}
-                    <View style={{ alignItems: 'flex-end' }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
-                            <OSStatusBadge status={item.status} />
-                            {item.atrasado && (
-                                <View style={{ backgroundColor: 'rgba(239, 68, 68, 0.2)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, marginLeft: 4 }}>
-                                    <Text style={{ color: theme.colors.error, fontSize: 8, fontWeight: '700' }}>ATRASADO</Text>
-                                </View>
-                            )}
-                        </View>
-                        <Text style={{ color: theme.colors.textMuted, fontSize: 9, letterSpacing: 1 }}>VALOR TOTAL</Text>
+                    <View style={{ alignItems: 'flex-end', justifyContent: 'center', minHeight: 60 }}>
+                        <Text style={{ color: theme.colors.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 2 }}>VALOR TOTAL</Text>
                         {item.valorDesconto && item.valorDesconto > 0 ? (
                             <>
                                 <Text style={{ color: theme.colors.textMuted, fontSize: 10, textDecorationLine: 'line-through' }}>

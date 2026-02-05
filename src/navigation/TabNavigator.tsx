@@ -34,7 +34,11 @@ const TabIcon: React.FC<TabIconProps> = ({ focused, icon, label }) => (
     </View>
 );
 
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
 export const TabNavigator = () => {
+    const insets = useSafeAreaInsets();
+
     return (
         <Tab.Navigator
             screenOptions={{
@@ -44,8 +48,8 @@ export const TabNavigator = () => {
                     backgroundColor: theme.colors.backgroundSecondary,
                     borderTopWidth: 1,
                     borderTopColor: theme.colors.border,
-                    height: 85,
-                    paddingBottom: 20,
+                    height: 65 + Math.max(insets.bottom, 20),
+                    paddingBottom: Math.max(insets.bottom, 20),
                     paddingTop: 8,
                 },
                 tabBarActiveTintColor: theme.colors.primary,

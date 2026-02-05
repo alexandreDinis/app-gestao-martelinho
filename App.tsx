@@ -43,7 +43,33 @@ function AppRoutes() {
   );
 }
 
+import { databaseService } from './src/services/database/DatabaseService';
+import { ActivityIndicator, View } from 'react-native';
+
 export default function App() {
+  const [dbReady, setDbReady] = React.useState(false);
+
+  React.useEffect(() => {
+    async function init() {
+      try {
+        await databaseService.initialize();
+      } catch (e) {
+        console.error("Erro ao iniciar DB:", e);
+      } finally {
+        setDbReady(true);
+      }
+    }
+    init();
+  }, []);
+
+  if (!dbReady) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: theme.colors.background }}>
+        <ActivityIndicator size="large" color={theme.colors.primary} />
+      </View>
+    );
+  }
+
   return (
     <SafeAreaProvider>
       <NavigationContainer

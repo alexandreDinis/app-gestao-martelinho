@@ -110,6 +110,17 @@ export const ClienteModel = {
     },
 
     /**
+     * Salvar múltiplos clientes do servidor no cache local (Batch)
+     */
+    async upsertBatch(clientes: Cliente[]): Promise<void> {
+        // TODO: Usar transação real quando disponível no DatabaseService
+        // Por enquanto, processar em série para garantir consistência
+        for (const cliente of clientes) {
+            await this.upsertFromServer(cliente);
+        }
+    },
+
+    /**
      * Salvar cliente do servidor no cache local
      */
     async upsertFromServer(cliente: Cliente): Promise<LocalCliente> {

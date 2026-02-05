@@ -124,6 +124,15 @@ export const OSModel = {
     },
 
     /**
+     * Salvar múltiplas OS do servidor no cache local (Batch)
+     */
+    async upsertBatch(osList: OrdemServico[]): Promise<void> {
+        for (const os of osList) {
+            await this.upsertFromServer(os);
+        }
+    },
+
+    /**
      * Salvar OS do servidor no cache local
      */
     async upsertFromServer(os: OrdemServico): Promise<LocalOS> {

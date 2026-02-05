@@ -216,3 +216,15 @@ export interface DespesaRequest {
     cartaoId?: number;
     numeroParcelas?: number;
 }
+
+export interface Despesa {
+    id: number;
+    dataDespesa: string;
+    valor: number;
+    categoria: string;
+    descricao: string;
+    pagoAgora: boolean;
+    dataVencimento?: string;
+    meioPagamento?: string;
+    cartaoId?: number;
+}
