@@ -172,8 +172,8 @@ export const MIGRATIONS = [
         updated_at INTEGER
       );
     `
-  }
-    {
+  },
+  {
     version: 2,
     name: 'sync_queue_refactor_and_uuids',
     sql: `
