@@ -3,7 +3,8 @@ import { View, Text, ScrollView, TouchableOpacity, ActivityIndicator, Alert, Mod
 import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../navigation/types';
-import { ChevronLeft, Calendar, User, Car, Share2, CheckCircle, DollarSign, Wrench, Plus, Trash2, Ban, X, Edit2, Save } from 'lucide-react-native';
+import { ChevronLeft, Calendar, User, Car, Share2, CheckCircle, DollarSign, Wrench, Plus, Trash2, Ban, X, Edit2, Save, Search, AlertTriangle } from 'lucide-react-native';
+import Toast from 'react-native-toast-message';
 import { Picker } from '@react-native-picker/picker';
 import { osService } from '../services/osService';
 import { userService } from '../services/userService';
@@ -137,45 +138,64 @@ export const OSDetailsScreen = () => {
                 console.log('[OSDetails] API response:', JSON.stringify(check));
 
                 if (check.existe && check.veiculoExistente) {
-                    // Show alert asking if user wants to continue and auto-fill
                     Alert.alert(
-                        'Veículo Já Cadastrado',
-                        `Este veículo já possui serviços anteriores:\n\n${check.veiculoExistente.modelo} - ${check.veiculoExistente.cor}\n\nDeseja continuar e usar os dados existentes?`,
+                        'Veículo Encontrado',
+                        `Modelo: ${check.veiculoExistente.modelo}\nCor: ${check.veiculoExistente.cor}\n\nDeseja usar estes dados?`,
                         [
                             {
                                 text: 'Cancelar',
                                 style: 'cancel',
                                 onPress: () => {
-                                    setVeiculoForm({ placa: '', modelo: '', cor: '' });
-                                    setPlateChecked(false);
-                                },
+                                    setExistingVehicle(null);
+                                    setPlateChecked(true); // User ignored
+                                }
                             },
                             {
-                                text: 'Sim, Continuar',
+                                text: 'Sim, preencher',
                                 onPress: () => {
-                                    // Auto-fill with existing data
                                     setVeiculoForm({
-                                        placa: placaLimpa,
-                                        modelo: check.veiculoExistente.modelo,
-                                        cor: check.veiculoExistente.cor,
+                                        ...veiculoForm,
+                                        modelo: check.veiculoExistente.modelo || '',
+                                        cor: check.veiculoExistente.cor || '',
                                     });
                                     setExistingVehicle(check.veiculoExistente);
                                     setPlateChecked(true);
-                                },
-                            },
+                                    Toast.show({
+                                        type: 'success',
+                                        text1: 'Dados preenchidos',
+                                        text2: 'Modelo e cor carregados.',
+                                    });
+                                }
+                            }
                         ]
                     );
                 } else {
                     console.log('[OSDetails] Plate not found in system');
-                    setPlateChecked(true);
+                    Toast.show({
+                        type: 'info',
+                        text1: 'Veículo Novo',
+                        text2: 'Placa não encontrada. Preencha os dados manualmente.',
+                        visibilityTime: 4000
+                    });
                     setExistingVehicle(null);
+                    setPlateChecked(true);
                 }
             } catch (error) {
                 console.error('[OSDetails] Error checking plate:', error);
+                Toast.show({
+                    type: 'error',
+                    text1: 'Erro ao verificar',
+                    text2: 'Tente novamente.',
+                });
                 setPlateChecked(true);
             }
         } else {
             console.log('[OSDetails] Plate too short:', placaLimpa.length);
+            Toast.show({
+                type: 'error',
+                text1: 'Placa Inválida',
+                text2: 'Digite a placa completa (7 caracteres).',
+            });
         }
     };
 
@@ -680,11 +700,28 @@ export const OSDetailsScreen = () => {
                             </TouchableOpacity>
                         </View>
 
-                        <PlateInput
-                            value={veiculoForm.placa}
-                            onChange={(val) => setVeiculoForm({ ...veiculoForm, placa: val })}
-                            onBlur={handleCheckPlate}
-                        />
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                            <View style={{ flex: 1 }}>
+                                <PlateInput
+                                    value={veiculoForm.placa}
+                                    onChange={(val) => setVeiculoForm({ ...veiculoForm, placa: val })}
+                                // onCheck={handleCheckPlate} // If PlateInput supported it
+                                />
+                            </View>
+                            <TouchableOpacity
+                                onPress={handleCheckPlate}
+                                style={{
+                                    backgroundColor: theme.colors.primary,
+                                    padding: 12,
+                                    borderRadius: 8,
+                                    justifyContent: 'center',
+                                    alignItems: 'center',
+                                    height: 50
+                                }}
+                            >
+                                <Search size={24} color="#000" />
+                            </TouchableOpacity>
+                        </View>
                         {existingVehicle && (
                             <Text style={{ color: theme.colors.warning, fontSize: 10, marginBottom: 16, textAlign: 'center' }}>
                                 ⚠️ Dados preenchidos automaticamente de serviço anterior

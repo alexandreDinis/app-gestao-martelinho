@@ -9,11 +9,13 @@ import { Cliente } from '../types';
 import { theme } from '../theme';
 import { Card, Button, Input } from '../components/ui';
 
-import { StackNavigationProp } from '@react-navigation/stack';
-import { RootStackParamList } from '../navigation/types';
+import { OfflineDebug } from '../utils/OfflineDebug';
+
+// ...
 
 export const CreateOSScreen = () => {
     const navigation = useNavigation<StackNavigationProp<RootStackParamList>>();
+    const [isForceOffline, setIsForceOffline] = useState(OfflineDebug.isForceOffline());
 
     // Form State
     const [selectedClient, setSelectedClient] = useState<Cliente | null>(null);
@@ -30,6 +32,12 @@ export const CreateOSScreen = () => {
     // Loading States
     const [loadingClients, setLoadingClients] = useState(false);
     const [submitting, setSubmitting] = useState(false);
+
+    const toggleOfflineMode = () => {
+        const newMode = !OfflineDebug.isForceOffline();
+        OfflineDebug.setForceOffline(newMode);
+        setIsForceOffline(newMode);
+    };
 
     useEffect(() => {
         if (showClientModal && clients.length === 0) {
@@ -132,6 +140,7 @@ export const CreateOSScreen = () => {
                 style={{
                     flexDirection: 'row',
                     alignItems: 'center',
+                    justifyContent: 'space-between',
                     paddingHorizontal: 16,
                     paddingTop: 50,
                     paddingBottom: 16,
@@ -140,13 +149,39 @@ export const CreateOSScreen = () => {
                     borderBottomColor: theme.colors.border,
                 }}
             >
-                <TouchableOpacity onPress={() => navigation.goBack()} style={{ marginRight: 16 }}>
-                    <ChevronLeft size={24} color={theme.colors.primary} />
-                </TouchableOpacity>
-                <View>
-                    <Text style={{ color: theme.colors.primary, fontSize: 18, fontWeight: '900', letterSpacing: 1 }}>NOVA OS</Text>
-                    <Text style={{ color: theme.colors.textMuted, fontSize: 10, letterSpacing: 1 }}>Preencha os dados iniciais</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    <TouchableOpacity onPress={() => navigation.goBack()} style={{ marginRight: 16 }}>
+                        <ChevronLeft size={24} color={theme.colors.primary} />
+                    </TouchableOpacity>
+                    <View>
+                        <Text style={{ color: theme.colors.primary, fontSize: 18, fontWeight: '900', letterSpacing: 1 }}>NOVA OS</Text>
+                        <Text style={{ color: theme.colors.textMuted, fontSize: 10, letterSpacing: 1 }}>Preencha os dados iniciais</Text>
+                    </View>
                 </View>
+
+                {/* Offline Toggle */}
+                <TouchableOpacity
+                    onPress={toggleOfflineMode}
+                    style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        backgroundColor: isForceOffline ? 'rgba(239, 68, 68, 0.2)' : 'rgba(34, 197, 94, 0.2)',
+                        paddingHorizontal: 8,
+                        paddingVertical: 4,
+                        borderRadius: 12,
+                        borderWidth: 1,
+                        borderColor: isForceOffline ? theme.colors.error : theme.colors.success
+                    }}
+                >
+                    <Text style={{
+                        color: isForceOffline ? theme.colors.error : theme.colors.success,
+                        fontSize: 10,
+                        fontWeight: '700',
+                        marginRight: 4
+                    }}>
+                        {isForceOffline ? '✈️ OFF' : '🌐 ON'}
+                    </Text>
+                </TouchableOpacity>
             </View>
 
             <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16 }}>
@@ -256,10 +291,10 @@ export const CreateOSScreen = () => {
                 <Button onPress={handleCreate} loading={submitting} disabled={submitting}>
                     {submitting ? 'CRIANDO...' : 'CRIAR ORDEM >>'}
                 </Button>
-            </ScrollView>
+            </ScrollView >
 
             {/* Client Selection Modal */}
-            <Modal visible={showClientModal} animationType="slide" transparent>
+            < Modal visible={showClientModal} animationType="slide" transparent >
                 <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.9)', paddingTop: 40 }}>
                     <View
                         style={{
@@ -339,7 +374,7 @@ export const CreateOSScreen = () => {
                         )}
                     </View>
                 </View>
-            </Modal>
+            </Modal >
         </View >
     );
 };

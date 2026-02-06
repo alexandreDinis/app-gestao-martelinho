@@ -85,6 +85,14 @@ export const VeiculoModel = {
             }
         }
 
+        // Se não achou por server_id (ou não foi passado), tentar pelo local_id
+        if (!osId && osLocalId) {
+            const os = await OSModel.getByLocalId(osLocalId);
+            if (os) {
+                osId = os.id;
+            }
+        }
+
         const id = await databaseService.runInsert(
             `INSERT INTO veiculos_os (
         local_id, server_id, version, os_id, os_local_id,
@@ -175,12 +183,26 @@ export const VeiculoModel = {
 
     /**
      * Marcar como sincronizado
+     * CRÍTICO: Atualiza referências em cascata (peças filhas)
      */
     async markAsSynced(localId: string, serverId: number): Promise<void> {
+        console.log(`[VeiculoModel] markAsSynced: UUID ${localId} → ID ${serverId}`);
+
+        // 1. Atualizar veículo com server_id
         await databaseService.runUpdate(
             `UPDATE veiculos_os SET server_id = ?, sync_status = 'SYNCED' WHERE local_id = ?`,
             [serverId, localId]
         );
+
+        // 2. CASCATA: Atualizar peças filhas para apontar pro novo server_id do veículo
+        const childrenUpdated = await databaseService.runUpdate(
+            `UPDATE pecas_os SET veiculo_id = ? WHERE veiculo_local_id = ?`,
+            [serverId, localId]
+        );
+
+        console.log(`[VeiculoModel] ✅ Veiculo synced. Updated ${childrenUpdated} child pecas to point to Veiculo ID ${serverId}`);
+
+        // 3. Remover da fila de sync
         await databaseService.runDelete(
             `DELETE FROM sync_queue WHERE entity_type = 'veiculo' AND entity_local_id = ?`,
             [localId]

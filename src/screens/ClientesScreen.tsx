@@ -3,19 +3,21 @@ import { View, Text, FlatList, TouchableOpacity, RefreshControl, TextInput } fro
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../navigation/types';
-import { Search, Phone, Mail, MapPin, User, Plus } from 'lucide-react-native';
+import { Search, Phone, Mail, MapPin, User, Plus, Wifi, WifiOff } from 'lucide-react-native';
 import { theme } from '../theme';
 import { Card, Badge } from '../components/ui';
 import { clienteService } from '../services/clienteService';
 import { ClienteModel } from '../services/database/models/ClienteModel';
 import { SyncService } from '../services/SyncService';
 import { Cliente } from '../types';
+import { OfflineDebug } from '../utils/OfflineDebug';
 
 export const ClientesScreen = () => {
     const navigation = useNavigation<StackNavigationProp<RootStackParamList>>();
     const [clientes, setClientes] = useState<Cliente[]>([]);
     const [loading, setLoading] = useState(false);
     const [searchTerm, setSearchTerm] = useState('');
+    const [isOffline, setIsOffline] = useState(OfflineDebug.isForceOffline());
 
     const fetchClientes = async () => {
         try {
@@ -31,8 +33,11 @@ export const ClientesScreen = () => {
     const handleRefresh = async () => {
         setLoading(true);
         try {
-            // Sync: PULL do servidor para o banco local
+            // Sync Completo: PUSH (envia locais) depois PULL (baixa do servidor)
+            // Isso garante que edições locais não sejam sobrescritas se a queue não tiver sido processada
+            await SyncService.processQueue();
             await SyncService.syncClientes();
+
             // Recarregar do banco
             await fetchClientes();
         } catch (error) {
@@ -120,7 +125,7 @@ export const ClientesScreen = () => {
                             </View>
                         )}
                         {item.cidade && (
-                            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4 }}>
                                 <MapPin size={14} color={theme.colors.textSecondary} />
                                 <Text style={{ color: theme.colors.textSecondary, fontSize: 13, marginLeft: 8 }}>
                                     {item.cidade}{item.estado ? ` - ${item.estado}` : ''}
@@ -146,9 +151,35 @@ export const ClientesScreen = () => {
                     borderBottomColor: theme.colors.border,
                 }}
             >
-                <Text style={{ color: theme.colors.primary, fontSize: 20, fontWeight: '900', letterSpacing: 2, marginBottom: 16 }}>
-                    CLIENTES
-                </Text>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                    <Text style={{ color: theme.colors.primary, fontSize: 20, fontWeight: '900', letterSpacing: 2 }}>
+                        CLIENTES
+                    </Text>
+                    <TouchableOpacity
+                        onPress={() => {
+                            const newState = !isOffline;
+                            OfflineDebug.setForceOffline(newState);
+                            setIsOffline(newState);
+                        }}
+                        style={{
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            backgroundColor: isOffline ? '#dc2626' : '#16a34a',
+                            paddingHorizontal: 12,
+                            paddingVertical: 6,
+                            borderRadius: 6,
+                        }}
+                    >
+                        {isOffline ? (
+                            <WifiOff size={16} color="#fff" />
+                        ) : (
+                            <Wifi size={16} color="#fff" />
+                        )}
+                        <Text style={{ color: '#fff', marginLeft: 6, fontSize: 12, fontWeight: '700' }}>
+                            {isOffline ? '✈️ OFF' : '🌐 ON'}
+                        </Text>
+                    </TouchableOpacity>
+                </View>
 
                 {/* Search */}
                 <View

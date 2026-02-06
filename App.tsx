@@ -1,4 +1,5 @@
 /// <reference types="nativewind/types" />
+import 'react-native-get-random-values'; // 🔧 Polyfill para crypto.getRandomValues() (necessário para UUID)
 import "./global.css";
 import 'react-native-gesture-handler';
 import React from 'react';
@@ -45,6 +46,7 @@ function AppRoutes() {
 
 import { databaseService } from './src/services/database/DatabaseService';
 import { ActivityIndicator, View } from 'react-native';
+import Toast from 'react-native-toast-message';
 
 export default function App() {
   const [dbReady, setDbReady] = React.useState(false);
@@ -53,12 +55,32 @@ export default function App() {
     async function init() {
       try {
         await databaseService.initialize();
+
+        // 🔧 TEMPORÁRIO: Resetar banco para aplicar migration v2 (uuid)
+        // REMOVA APÓS EXECUTAR UMA VEZ!
+        console.log('🔧 Verificando se precisa resetar banco...');
+        const needsReset = await checkNeedsReset();
+        if (needsReset) {
+          console.log('🔄 Resetando banco para aplicar migrations...');
+          await databaseService.resetDatabase();
+          await databaseService.setMetadata('reset_applied', 'true');
+        }
       } catch (e) {
         console.error("Erro ao iniciar DB:", e);
       } finally {
         setDbReady(true);
       }
     }
+
+    async function checkNeedsReset() {
+      try {
+        const resetApplied = await databaseService.getMetadata('reset_applied');
+        return !resetApplied; // Se nunca resetou, precisa resetar
+      } catch {
+        return true; // Em caso de erro, resetar
+      }
+    }
+
     init();
   }, []);
 
@@ -84,6 +106,7 @@ export default function App() {
           <AppRoutes />
         </AuthProvider>
       </NavigationContainer>
+      <Toast />
     </SafeAreaProvider>
   );
 }

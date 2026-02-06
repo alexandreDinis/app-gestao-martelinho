@@ -11,13 +11,21 @@ class DatabaseService {
     private isInitialized = false;
 
     async initialize(): Promise<void> {
-        if (this.isInitialized) return;
+        // if (this.isInitialized) return; // FIX: Temporarily disabled to force schema check on reloads
 
         try {
             console.log('[DatabaseService] Initializing database...');
             this.db = await SQLite.openDatabaseAsync(DATABASE_NAME);
 
             await this.runMigrations();
+
+            // 🛡️ SAFETY CHECK: Force ensure columns exist independently of migration version status
+            // This fixes cases where V5 might be skipped due to version mismatch or dev environment issues
+            console.log('[DatabaseService] 🛡️ Running safety schema enforcement for OS columns...');
+            await this.safeAddColumn('ordens_servico', 'usuario_id', 'INTEGER');
+            await this.safeAddColumn('ordens_servico', 'usuario_nome', 'TEXT');
+            await this.safeAddColumn('ordens_servico', 'usuario_email', 'TEXT');
+
             this.isInitialized = true;
             console.log('[DatabaseService] Database initialized successfully');
         } catch (error) {
@@ -66,6 +74,40 @@ class DatabaseService {
                     ['db_version', migration.version.toString(), Date.now()]
                 );
             }
+        }
+
+    }
+
+
+    /**
+     * Adiciona uma coluna à tabela de forma segura (verifica se já existe)
+     */
+    /**
+     * Adiciona uma coluna à tabela de forma segura (verifica se já existe)
+     */
+    async safeAddColumn(tableName: string, columnName: string, columnType: string): Promise<void> {
+        if (!this.db) return;
+
+        try {
+            // Check if column exists using PRAGMA
+            const result = await this.db.getAllAsync<{ name: string }>(
+                `PRAGMA table_info(${tableName})`
+            );
+
+            const columnExists = result.some(col => col.name === columnName);
+
+            if (columnExists) {
+                // console.log(`[DatabaseService] Column ${columnName} already exists in ${tableName}`);
+                return;
+            }
+
+            console.log(`[DatabaseService] Adding missing column ${columnName} to ${tableName}...`);
+            await this.db.execAsync(
+                `ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnType}`
+            );
+            console.log(`[DatabaseService] ✅ Added column ${columnName} to ${tableName}`);
+        } catch (error: any) {
+            console.error(`[DatabaseService] 🛑 CRITICAL: Failed to add column ${columnName} to ${tableName}:`, error);
         }
     }
 
@@ -190,6 +232,31 @@ class DatabaseService {
             pendingSync: pendingSync?.count ?? 0,
             auditLogs: auditLogs?.count ?? 0,
         };
+    }
+
+    /**
+     * 🔧 DEBUG: Resetar banco de dados (apagar tudo e recriar)
+     */
+    async resetDatabase(): Promise<void> {
+        console.log('[DatabaseService] 🔄 Resetting database...');
+        const db = this.getDatabase();
+
+        // Listar todas as tabelas
+        const tables = await db.getAllAsync<{ name: string }>(`
+            SELECT name FROM sqlite_master 
+            WHERE type='table' AND name NOT LIKE 'sqlite_%'
+        `);
+
+        // Dropar todas as tabelas
+        for (const table of tables) {
+            console.log(`[DatabaseService] Dropping table: ${table.name}`);
+            await db.execAsync(`DROP TABLE IF EXISTS ${table.name}`);
+        }
+
+        // Recriar do zero
+        console.log('[DatabaseService] Re-running migrations...');
+        await this.runMigrations();
+        console.log('[DatabaseService] ✅ Database reset complete');
     }
 }
 

@@ -8,6 +8,13 @@ const MAX_RETRY_ATTEMPTS = 5;
 
 export const SyncQueueModel = {
     /**
+     * Adicionar item à fila de sincronização (Alias para add)
+     */
+    async addToQueue(item: Omit<SyncQueueItem, 'id' | 'created_at' | 'status' | 'attempts'>): Promise<number> {
+        return this.add(item);
+    },
+
+    /**
      * Adicionar item à fila de sincronização
      */
     async add(item: Omit<SyncQueueItem, 'id' | 'created_at' | 'status' | 'attempts'>): Promise<number> {
@@ -96,5 +103,34 @@ export const SyncQueueModel = {
             `SELECT * FROM sync_queue WHERE status = 'PENDING' AND attempts < ? ORDER BY created_at ASC`,
             [MAX_RETRY_ATTEMPTS]
         );
+    },
+
+    /**
+     * Reseta tentativas de itens falhos para tentar novamente
+     */
+    async retryAllFailed(): Promise<void> {
+        console.log('[SyncQueue] Resetting attempts for failed items...');
+        await databaseService.runUpdate(
+            `UPDATE sync_queue SET attempts = 0, status = 'PENDING' WHERE attempts >= ?`,
+            [MAX_RETRY_ATTEMPTS]
+        );
+    },
+
+    /**
+     * Verificar se existe item pendente na fila para uma entidade específica
+     */
+    async hasPending(resource: string, localId: string): Promise<boolean> {
+        // Verifica se há item PENDING e que AINDA pode ser processado (attempts < MAX)
+        // Se attempts >= MAX, o item está "morto" na fila (mesmo que status seja PENDING por algum erro)
+        // e não deve bloquear updates do servidor (Zombie Check deve retornar false)
+        const item = await databaseService.getFirst<SyncQueueItem>(
+            `SELECT id FROM sync_queue 
+             WHERE resource = ? 
+             AND temp_id = ? 
+             AND status = 'PENDING' 
+             AND attempts < ?`,
+            [resource, localId, MAX_RETRY_ATTEMPTS]
+        );
+        return !!item;
     }
 };

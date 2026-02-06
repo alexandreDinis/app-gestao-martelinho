@@ -64,6 +64,7 @@ export interface Cliente {
     contato: string;
     email: string;
     status: StatusCliente;
+    localId?: string;
     // Address Fields
     logradouro?: string;
     numero?: string;
@@ -133,6 +134,7 @@ export interface OrdemServico {
     usuarioNome?: string;
     usuarioEmail?: string;
     empresaId: number;
+    localId?: string;
 }
 
 export interface CreateOSRequest {
@@ -227,4 +229,5 @@ export interface Despesa {
     dataVencimento?: string;
     meioPagamento?: string;
     cartaoId?: number;
+    localId?: string;
 }

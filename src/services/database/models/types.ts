@@ -57,6 +57,10 @@ export interface LocalOS extends BaseLocalEntity {
     valor_total: number;
     tipo_desconto: string | null;
     valor_desconto: number | null;
+    // Campos de Responsável
+    usuario_id?: number | null;
+    usuario_nome?: string | null;
+    usuario_email?: string | null;
 }
 
 export interface LocalVeiculo extends BaseLocalEntity {
