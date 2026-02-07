@@ -11,8 +11,8 @@ export const userService = {
 
         if (isOnline) {
             try {
-                Logger.info('[UserService] Fetching users from API');
-                const response = await api.get<User[]>('/users');
+                Logger.info('[UserService] Fetching technicians from API');
+                const response = await api.get<User[]>('/users/equipe');
 
                 // Cache local
                 await UserModel.upsertBatch(response.data);

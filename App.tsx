@@ -55,29 +55,10 @@ export default function App() {
     async function init() {
       try {
         await databaseService.initialize();
-
-        // 🔧 TEMPORÁRIO: Resetar banco para aplicar migration v2 (uuid)
-        // REMOVA APÓS EXECUTAR UMA VEZ!
-        console.log('🔧 Verificando se precisa resetar banco...');
-        const needsReset = await checkNeedsReset();
-        if (needsReset) {
-          console.log('🔄 Resetando banco para aplicar migrations...');
-          await databaseService.resetDatabase();
-          await databaseService.setMetadata('reset_applied', 'true');
-        }
       } catch (e) {
         console.error("Erro ao iniciar DB:", e);
       } finally {
         setDbReady(true);
-      }
-    }
-
-    async function checkNeedsReset() {
-      try {
-        const resetApplied = await databaseService.getMetadata('reset_applied');
-        return !resetApplied; // Se nunca resetou, precisa resetar
-      } catch {
-        return true; // Em caso de erro, resetar
       }
     }
 

@@ -1,13 +1,17 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, TextInput, TouchableOpacity, ScrollView, Alert, ActivityIndicator, FlatList, Modal } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
+import { StackNavigationProp } from '@react-navigation/stack';
 import { ChevronLeft, Search, User, Car, Calendar, CheckCircle, X } from 'lucide-react-native';
 import { Picker } from '@react-native-picker/picker';
 import { osService } from '../services/osService';
 import { userService } from '../services/userService';
 import { Cliente } from '../types';
+import { RootStackParamList } from '../navigation/types';
 import { theme } from '../theme';
 import { Card, Button, Input } from '../components/ui';
+import { SimplePlateInput } from '../components/forms/SimplePlateInput';
+import Toast from 'react-native-toast-message';
 
 import { OfflineDebug } from '../utils/OfflineDebug';
 
@@ -79,12 +83,57 @@ export const CreateOSScreen = () => {
         loadUsers();
     }, []);
 
+    const [loadingPlate, setLoadingPlate] = useState(false);
+
     const loadUsers = async () => {
         try {
             const data = await userService.getUsers();
             setUsers(data);
         } catch (e) {
             console.error('Failed to load users', e);
+        }
+    };
+
+    const handleCheckPlate = async () => {
+        const placaLimpa = plate.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+        if (placaLimpa.length < 3) {
+            Alert.alert('Atenção', 'Digite pelo menos 3 caracteres.');
+            return;
+        }
+
+        setLoadingPlate(true);
+        try {
+            const check = await osService.verificarPlaca(placaLimpa);
+            if (check.existe && check.veiculoExistente) {
+                Alert.alert(
+                    'Veículo Encontrado',
+                    `Modelo: ${check.veiculoExistente.modelo}\nCor: ${check.veiculoExistente.cor}\n\nDeseja carregar estes dados?`,
+                    [
+                        { text: 'Não', style: 'cancel' },
+                        {
+                            text: 'Sim, preencher',
+                            onPress: () => {
+                                setModel(check.veiculoExistente!.modelo || '');
+                                setColor(check.veiculoExistente!.cor || '');
+                                Toast.show({
+                                    type: 'success',
+                                    text1: 'Dados preenchidos',
+                                });
+                            }
+                        }
+                    ]
+                );
+            } else {
+                Toast.show({
+                    type: 'info',
+                    text1: 'Veículo Novo',
+                    text2: 'Preencha os dados manualmente.',
+                });
+            }
+        } catch (error) {
+            console.error(error);
+        } finally {
+            setLoadingPlate(false);
         }
     };
 
@@ -111,7 +160,7 @@ export const CreateOSScreen = () => {
             // 2. Add Vehicle
             await osService.addVeiculo({
                 ordemServicoId: os.id,
-                placa: plate.toUpperCase(),
+                placa: plate.replace(/[^a-zA-Z0-9]/g, '').toUpperCase(),
                 modelo: model,
                 cor: color || 'Não informada'
             });
@@ -256,14 +305,15 @@ export const CreateOSScreen = () => {
                         <Text style={{ color: theme.colors.textSecondary, fontSize: 12, marginLeft: 8 }}>Dados do veículo</Text>
                     </View>
 
-                    <Input
-                        label="PLACA"
-                        placeholder="ABC-1234"
-                        value={plate}
-                        onChangeText={t => setPlate(t.toUpperCase())}
-                        maxLength={8}
-                        containerStyle={{ marginBottom: 16 }}
-                    />
+                    <View style={{ marginBottom: 16 }}>
+                        <SimplePlateInput
+                            value={plate}
+                            onChange={setPlate}
+                            onSearch={handleCheckPlate}
+                            isSearching={loadingPlate}
+                            buttonLabel="VERIFICAR PLACA"
+                        />
+                    </View>
                     <Input
                         label="MODELO"
                         placeholder="Ex: Fiat Uno"

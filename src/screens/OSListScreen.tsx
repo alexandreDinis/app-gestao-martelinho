@@ -58,13 +58,11 @@ export const OSListScreen = () => {
     const handleRefresh = async () => {
         setLoading(true);
         try {
-            // Importar dinamicamente para evitar ciclos se necessário, ou assumir import no topo
-            // Vamos adicionar import SyncService no topo primeiro
-            await SyncService.processQueue();
-            await SyncService.syncOS();
+            await SyncService.syncAll(true);
             await fetchOrdens();
         } catch (error) {
             console.error('Sync failed:', error);
+            Alert.alert('Erro', 'Falha na sincronização. Verifique sua conexão.');
         } finally {
             setLoading(false);
         }

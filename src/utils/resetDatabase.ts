@@ -1,7 +1,7 @@
 // Script temporário para resetar o banco de dados
 // USO: Importar e chamar uma única vez
 
-import { databaseService } from './services/database/DatabaseService';
+import { databaseService } from '../services/database/DatabaseService';
 
 export const resetDatabaseOnce = async () => {
     console.log('🔧 [RESET] Iniciando reset do banco de dados...');

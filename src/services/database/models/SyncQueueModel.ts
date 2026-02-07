@@ -74,9 +74,14 @@ export const SyncQueueModel = {
     },
 
     /**
-     * Marcar item como erro (incrementa tentativas)
+     * Marcar tentativa de processamento (sucesso ou erro)
      */
-    async markAsError(id: number, errorMessage?: string): Promise<void> {
+    async markAttempt(id: number, success: boolean, errorMessage?: string): Promise<void> {
+        if (success) {
+            await this.markAsProcessed(id);
+            return;
+        }
+
         await databaseService.runUpdate(
             `UPDATE sync_queue 
              SET attempts = attempts + 1, 
@@ -86,6 +91,32 @@ export const SyncQueueModel = {
              WHERE id = ?`,
             [Date.now(), errorMessage || null, MAX_RETRY_ATTEMPTS, id]
         );
+    },
+
+    /**
+     * Obter contagem de itens na fila
+     */
+    async getCounts(): Promise<{ total: number; errors: number }> {
+        const total = await databaseService.getFirst<{ count: number }>(
+            `SELECT COUNT(*) as count FROM sync_queue WHERE status = 'PENDING' AND attempts < ?`,
+            [MAX_RETRY_ATTEMPTS]
+        );
+        const errors = await databaseService.getFirst<{ count: number }>(
+            `SELECT COUNT(*) as count FROM sync_queue WHERE status = 'ERROR' OR attempts >= ?`,
+            [MAX_RETRY_ATTEMPTS]
+        );
+
+        return {
+            total: total?.count || 0,
+            errors: errors?.count || 0
+        };
+    },
+
+    /**
+     * Marcar item como erro (Legacy - use markAttempt)
+     */
+    async markAsError(id: number, errorMessage?: string): Promise<void> {
+        return this.markAttempt(id, false, errorMessage);
     },
 
     /**

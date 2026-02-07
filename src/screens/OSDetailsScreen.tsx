@@ -11,7 +11,7 @@ import { userService } from '../services/userService';
 import { OrdemServico, OSStatus, VeiculoOS, PecaOS, User as UserType } from '../types';
 import { theme } from '../theme';
 import { Card, OSStatusBadge } from '../components/ui';
-import { PlateInput } from '../components/forms/PlateInput';
+import { SimplePlateInput } from '../components/forms/SimplePlateInput';
 
 interface TipoPeca {
     id: number;
@@ -107,6 +107,25 @@ export const OSDetailsScreen = () => {
     };
 
     const handleUpdateStatus = async (newStatus: OSStatus) => {
+        // Validação: Não permitir iniciar sem responsável
+        if (newStatus === 'EM_EXECUCAO' && !os?.usuarioId) {
+            Alert.alert(
+                'Atenção',
+                'Para iniciar a OS, é necessário definir um Responsável Técnico.',
+                [
+                    { text: 'Cancelar', style: 'cancel' },
+                    {
+                        text: 'Definir Agora',
+                        onPress: () => {
+                            setIsEditingUser(true);
+                            if (users.length > 0) setSelectedUserId(users[0].id); // Default to first user if none selected
+                        }
+                    }
+                ]
+            );
+            return;
+        }
+
         try {
             setUpdating(true);
             await osService.updateStatus(osId, newStatus);
@@ -129,73 +148,55 @@ export const OSDetailsScreen = () => {
 
     const handleCheckPlate = async () => {
         const placaLimpa = veiculoForm.placa.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
-        console.log('[OSDetails] handleCheckPlate called, placa:', placaLimpa);
+        if (placaLimpa.length < 3) {
+            Alert.alert('Atenção', 'Digite pelo menos 3 caracteres.');
+            return;
+        }
 
-        if (placaLimpa.length >= 7) {
-            try {
-                console.log('[OSDetails] Checking plate with API...');
-                const check = await osService.verificarPlaca(placaLimpa);
-                console.log('[OSDetails] API response:', JSON.stringify(check));
-
-                if (check.existe && check.veiculoExistente) {
-                    Alert.alert(
-                        'Veículo Encontrado',
-                        `Modelo: ${check.veiculoExistente.modelo}\nCor: ${check.veiculoExistente.cor}\n\nDeseja usar estes dados?`,
-                        [
-                            {
-                                text: 'Cancelar',
-                                style: 'cancel',
-                                onPress: () => {
-                                    setExistingVehicle(null);
-                                    setPlateChecked(true); // User ignored
-                                }
-                            },
-                            {
-                                text: 'Sim, preencher',
-                                onPress: () => {
-                                    setVeiculoForm({
-                                        ...veiculoForm,
-                                        modelo: check.veiculoExistente.modelo || '',
-                                        cor: check.veiculoExistente.cor || '',
+        setUpdating(true);
+        try {
+            const check = await osService.verificarPlaca(placaLimpa);
+            if (check.existe && check.veiculoExistente) {
+                Alert.alert(
+                    'Veículo Encontrado',
+                    `Modelo: ${check.veiculoExistente.modelo}\nCor: ${check.veiculoExistente.cor}\n\nDeseja carregar estes dados e adicionar à OS?`,
+                    [
+                        { text: 'Não', style: 'cancel' },
+                        {
+                            text: 'Sim, Adicionar',
+                            onPress: async () => {
+                                try {
+                                    setUpdating(true);
+                                    await osService.addVeiculo({
+                                        ordemServicoId: osId,
+                                        placa: placaLimpa,
+                                        modelo: check.veiculoExistente!.modelo || '',
+                                        cor: check.veiculoExistente!.cor || '',
                                     });
-                                    setExistingVehicle(check.veiculoExistente);
-                                    setPlateChecked(true);
-                                    Toast.show({
-                                        type: 'success',
-                                        text1: 'Dados preenchidos',
-                                        text2: 'Modelo e cor carregados.',
-                                    });
+                                    setVeiculoModal(false);
+                                    setVeiculoForm({ placa: '', modelo: '', cor: '' });
+                                    fetchDetails();
+                                } catch (e) {
+                                    Alert.alert('Erro', 'Não foi possível adicionar o veículo.');
+                                } finally {
+                                    setUpdating(false);
                                 }
                             }
-                        ]
-                    );
-                } else {
-                    console.log('[OSDetails] Plate not found in system');
-                    Toast.show({
-                        type: 'info',
-                        text1: 'Veículo Novo',
-                        text2: 'Placa não encontrada. Preencha os dados manualmente.',
-                        visibilityTime: 4000
-                    });
-                    setExistingVehicle(null);
-                    setPlateChecked(true);
-                }
-            } catch (error) {
-                console.error('[OSDetails] Error checking plate:', error);
+                        }
+                    ]
+                );
+            } else {
                 Toast.show({
-                    type: 'error',
-                    text1: 'Erro ao verificar',
-                    text2: 'Tente novamente.',
+                    type: 'info',
+                    text1: 'Veículo Novo',
+                    text2: 'Preencha os dados manualmente.',
                 });
                 setPlateChecked(true);
             }
-        } else {
-            console.log('[OSDetails] Plate too short:', placaLimpa.length);
-            Toast.show({
-                type: 'error',
-                text1: 'Placa Inválida',
-                text2: 'Digite a placa completa (7 caracteres).',
-            });
+        } catch (error) {
+            console.error(error);
+        } finally {
+            setUpdating(false);
         }
     };
 
@@ -700,27 +701,14 @@ export const OSDetailsScreen = () => {
                             </TouchableOpacity>
                         </View>
 
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                            <View style={{ flex: 1 }}>
-                                <PlateInput
-                                    value={veiculoForm.placa}
-                                    onChange={(val) => setVeiculoForm({ ...veiculoForm, placa: val })}
-                                // onCheck={handleCheckPlate} // If PlateInput supported it
-                                />
-                            </View>
-                            <TouchableOpacity
-                                onPress={handleCheckPlate}
-                                style={{
-                                    backgroundColor: theme.colors.primary,
-                                    padding: 12,
-                                    borderRadius: 8,
-                                    justifyContent: 'center',
-                                    alignItems: 'center',
-                                    height: 50
-                                }}
-                            >
-                                <Search size={24} color="#000" />
-                            </TouchableOpacity>
+                        <View style={{ marginBottom: 16 }}>
+                            <SimplePlateInput
+                                value={veiculoForm.placa}
+                                onChange={(val) => setVeiculoForm({ ...veiculoForm, placa: val })}
+                                onSearch={handleCheckPlate}
+                                isSearching={updating}
+                                buttonLabel="VERIFICAR PLACA"
+                            />
                         </View>
                         {existingVehicle && (
                             <Text style={{ color: theme.colors.warning, fontSize: 10, marginBottom: 16, textAlign: 'center' }}>

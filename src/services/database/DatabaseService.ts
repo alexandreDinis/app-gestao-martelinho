@@ -11,27 +11,51 @@ class DatabaseService {
     private isInitialized = false;
 
     async initialize(): Promise<void> {
-        // if (this.isInitialized) return; // FIX: Temporarily disabled to force schema check on reloads
+        let retries = 3;
+        while (retries > 0) {
+            try {
+                console.log(`[DatabaseService] Initializing database (Attempts left: ${retries})...`);
+                this.db = await SQLite.openDatabaseAsync(DATABASE_NAME);
 
-        try {
-            console.log('[DatabaseService] Initializing database...');
-            this.db = await SQLite.openDatabaseAsync(DATABASE_NAME);
+                // 🚀 PERFORMANCE: Enable WAL (Write-Ahead Logging) to fix "database is locked"
+                await this.db.execAsync('PRAGMA journal_mode = WAL;');
 
-            await this.runMigrations();
+                // ⏳ TIMEOUT: Increase busy timeout to 5 seconds to handle high concurrency
+                await this.db.execAsync('PRAGMA busy_timeout = 5000;');
+                console.log('⚡ SQLite WAL Mode Enabled + Busy Timeout 5000ms');
 
-            // 🛡️ SAFETY CHECK: Force ensure columns exist independently of migration version status
-            // This fixes cases where V5 might be skipped due to version mismatch or dev environment issues
-            console.log('[DatabaseService] 🛡️ Running safety schema enforcement for OS columns...');
-            await this.safeAddColumn('ordens_servico', 'usuario_id', 'INTEGER');
-            await this.safeAddColumn('ordens_servico', 'usuario_nome', 'TEXT');
-            await this.safeAddColumn('ordens_servico', 'usuario_email', 'TEXT');
+                await this.runMigrations();
 
-            this.isInitialized = true;
-            console.log('[DatabaseService] Database initialized successfully');
-        } catch (error) {
-            console.error('[DatabaseService] Failed to initialize database:', error);
-            throw error;
+                // 🛡️ SAFETY CHECK: Force ensure columns exist independently of migration version status
+                // This fixes cases where V5/V6 might be skipped or fail due to dev environment issues
+                console.log('[DatabaseService] 🛡️ Running safety schema enforcement...');
+
+                // OS Columns
+                await this.safeAddColumn('ordens_servico', 'usuario_id', 'INTEGER');
+                await this.safeAddColumn('ordens_servico', 'usuario_nome', 'TEXT');
+                await this.safeAddColumn('ordens_servico', 'usuario_email', 'TEXT');
+
+                // User Columns (Defense against V2/V4/V6 inconsistencies)
+                await this.safeAddColumn('users', 'server_id', 'INTEGER');
+                await this.safeAddColumn('users', 'name', 'TEXT');
+                await this.safeAddColumn('users', 'email', 'TEXT');
+                await this.safeAddColumn('users', 'role', 'TEXT');
+
+                this.isInitialized = true;
+                console.log('[DatabaseService] Database initialized successfully');
+                return; // Success, exit function
+            } catch (error: any) {
+                console.error(`[DatabaseService] Init failed: ${error.message}`);
+                if (error.message?.includes('locked')) {
+                    retries--;
+                    console.log('⏳ Database locked. Waiting 1s before retry...');
+                    await new Promise(r => setTimeout(r, 1000));
+                } else {
+                    throw error; // Fatal error
+                }
+            }
         }
+        throw new Error("Failed to initialize DB after 3 retries");
     }
 
     private async runMigrations(): Promise<void> {
@@ -65,7 +89,16 @@ class DatabaseService {
                     .filter(s => s.length > 0);
 
                 for (const statement of statements) {
-                    await this.db.execAsync(statement);
+                    // Skip if statement is just comments
+                    const cleanStatement = statement
+                        .split('\n')
+                        .filter(line => !line.trim().startsWith('--'))
+                        .join('\n')
+                        .trim();
+
+                    if (cleanStatement.length > 0) {
+                        await this.db.execAsync(cleanStatement);
+                    }
                 }
 
                 // Atualizar versão

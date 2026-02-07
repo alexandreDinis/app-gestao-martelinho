@@ -213,7 +213,7 @@ export const DespesaModel = {
             [serverId, Date.now(), localId]
         );
         await databaseService.runDelete(
-            `DELETE FROM sync_queue WHERE entity_type = 'despesa' AND entity_local_id = ?`,
+            `DELETE FROM sync_queue WHERE resource = 'despesa' AND temp_id = ?`,
             [localId]
         );
     },
@@ -227,7 +227,7 @@ export const DespesaModel = {
             [localId]
         );
         await databaseService.runUpdate(
-            `UPDATE sync_queue SET error_message = ? WHERE entity_type = 'despesa' AND entity_local_id = ?`,
+            `UPDATE sync_queue SET error_message = ? WHERE resource = 'despesa' AND temp_id = ?`,
             [errorMessage, localId]
         );
     },
@@ -239,21 +239,20 @@ export const DespesaModel = {
         const now = Date.now();
 
         const existing = await databaseService.getFirst<{ id: number }>(
-            `SELECT id FROM sync_queue WHERE entity_type = 'despesa' AND entity_local_id = ?`,
+            `SELECT id FROM sync_queue WHERE resource = 'despesa' AND temp_id = ?`,
             [localId]
         );
 
         if (existing) {
             await databaseService.runUpdate(
-                `UPDATE sync_queue SET operation = ?, payload = ?, created_at = ? WHERE id = ?`,
+                `UPDATE sync_queue SET action = ?, payload = ?, created_at = ? WHERE id = ?`,
                 [operation, payload ? JSON.stringify(payload) : null, now, existing.id]
             );
         } else {
-            // PRIORIDADE CRÍTICA para despesas
             await databaseService.runInsert(
-                `INSERT INTO sync_queue (entity_type, entity_local_id, operation, payload, priority, created_at)
-         VALUES ('despesa', ?, ?, ?, ?, ?)`,
-                [localId, operation, payload ? JSON.stringify(payload) : null, SYNC_PRIORITIES.CRITICAL, now]
+                `INSERT INTO sync_queue (resource, temp_id, action, payload, created_at, status)
+         VALUES ('despesa', ?, ?, ?, ?, 'PENDING')`,
+                [localId, operation, payload ? JSON.stringify(payload) : null, now]
             );
         }
     },
@@ -274,7 +273,7 @@ export const DespesaModel = {
         } else {
             await databaseService.runDelete(`DELETE FROM despesas WHERE id = ?`, [id]);
             await databaseService.runDelete(
-                `DELETE FROM sync_queue WHERE entity_type = 'despesa' AND entity_local_id = ?`,
+                `DELETE FROM sync_queue WHERE resource = 'despesa' AND temp_id = ?`,
                 [existing.local_id]
             );
         }

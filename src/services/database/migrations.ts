@@ -246,7 +246,7 @@ export const MIGRATIONS = [
     version: 4,
     name: 'repair_schema_v4',
     sql: `
-      -- Garantir existência da tabela users (para quem rodou migration V1 quebrada)
+      -- Garantir existência da tabela users
       CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         server_id INTEGER,
@@ -256,39 +256,46 @@ export const MIGRATIONS = [
         created_at TEXT DEFAULT (datetime('now', 'localtime')),
         updated_at TEXT DEFAULT (datetime('now', 'localtime'))
       );
-
-      -- Garantir colunas em tipos_peca sem falhar se já existirem
-      -- SQLite não tem ADD COLUMN IF NOT EXISTS, então fazemos recreate ou try/catch no código?
-      -- Truque: adicionar coluna via script separado ou ignorar erro na migration runner?
-      -- Como o runner roda em transação, erro aborta tudo.
-      -- Abordagem melhor: Tentar criar tabela temporária e copiar se precisar? 
-      -- Simplificação: DROP e RECREATE tipos_peca se estivermos em ambiente dev/repair? Não, perde dados.
-      
-      -- Como valor_padrao é crítico, vamos tentar adicionar. Se falhar, o app crasha?
-      -- Vamos usar um bloco seguro se o driver suportar, mas aqui é string SQL bruta.
-      -- O DatabaseService divide por ';'.
-      
-      -- Tabela tipos_peca (recriar para garantir estrutura se estiver faltando colunas críticas é uma opção, 
-      -- mas 'valor_padrao' foi adicionado. Vamos assumir que se falhar é pq já existe)
-      
-      -- ALTER TABLE tipos_peca ADD COLUMN valor_padrao REAL DEFAULT 0; -- Perigoso se já existe
-
-      -- Garantir colunas de responsavel na OS
-      -- usuario_id, usuario_nome, usuario_email
-      -- Também adicionaremos via safeAddColumn no código para segurança
     `
-    // NOTA: Para colunas, melhor fazer no código ou uma migration que aceite falha. 
-    // Vou deixar o 'users' aqui. A coluna valor_padrao e campos de usuario vou tratar no código de inicialização.
   },
   {
     version: 5,
+    name: 'add_os_responsible_columns',
     sql: `
-      -- V5: Garantir colunas de responsável na OS (caso V4 já tenha rodado antes da alteração)
+      -- V5: Garantir colunas de responsável na OS
       ALTER TABLE ordens_servico ADD COLUMN usuario_id INTEGER;
       ALTER TABLE ordens_servico ADD COLUMN usuario_nome TEXT;
       ALTER TABLE ordens_servico ADD COLUMN usuario_email TEXT;
     `
+  },
+  {
+    version: 6,
+    name: 'make_users_name_nullable',
+    sql: `
+      -- V6: Tornar o nome do usuário opcional (SQLite workaround para DROP NOT NULL)
+      PRAGMA foreign_keys=OFF;
+      
+      CREATE TABLE IF NOT EXISTS users_v6 (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        server_id INTEGER,
+        name TEXT, -- Agora pode ser nulo
+        email TEXT UNIQUE NOT NULL,
+        role TEXT DEFAULT 'user',
+        created_at TEXT DEFAULT (datetime('now', 'localtime')),
+        updated_at TEXT DEFAULT (datetime('now', 'localtime'))
+      );
+
+      -- Migration robusta: Copiar apenas o que garantidamente existe em versões antigas (V2+)
+      -- Se server_id estiver faltando, ele ficará nulo e será preenchido no próximo sync.
+      INSERT OR IGNORE INTO users_v6 (id, name, email, role)
+      SELECT id, name, email, role FROM users;
+
+      DROP TABLE IF EXISTS users;
+      ALTER TABLE users_v6 RENAME TO users;
+      
+      PRAGMA foreign_keys=ON;
+    `
   }
 ];
 
-export const CURRENT_DB_VERSION = 3;
+export const CURRENT_DB_VERSION = 6;

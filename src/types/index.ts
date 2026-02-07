@@ -103,6 +103,7 @@ export interface ClienteFiltros {
 
 export interface PecaOS {
     id: number;
+    localId?: string;
     nomePeca: string;
     valorCobrado: number;
     descricao?: string;
@@ -110,6 +111,7 @@ export interface PecaOS {
 
 export interface VeiculoOS {
     id: number;
+    localId?: string;
     placa: string;
     modelo: string;
     cor: string;

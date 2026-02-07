@@ -116,16 +116,30 @@ export const ClienteModel = {
      * Salvar múltiplos clientes do servidor no cache local (Batch)
      */
     async upsertBatch(clientes: Cliente[]): Promise<void> {
-        // TODO: Usar transação real quando disponível no DatabaseService
-        // Por enquanto, processar em série para garantir consistência
-        for (const cliente of clientes) {
-            await this.upsertFromServer(cliente);
+        const db = databaseService.getDatabase();
+
+        // 🚀 PERFORMANCE: Chunked processing to prevent locks during large syncs
+        const CHUNK_SIZE = 20; // Clientes são mais leves que OS, podemos usar batch maior
+
+        for (let i = 0; i < clientes.length; i += CHUNK_SIZE) {
+            const chunk = clientes.slice(i, i + CHUNK_SIZE);
+            console.log(`[ClienteModel] Processing batch chunk ${i / CHUNK_SIZE + 1} (${chunk.length} items)...`);
+
+            await db.withTransactionAsync(async () => {
+                for (const cliente of chunk) {
+                    await this.upsertFromServer(cliente);
+                }
+            });
+
+            // ⏳ YIELD to Event Loop
+            if (i + CHUNK_SIZE < clientes.length) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
         }
     },
-
     /**
-     * Salvar cliente do servidor no cache local
-     */
+         * Salvar cliente do servidor no cache local
+         */
     async upsertFromServer(cliente: Cliente): Promise<LocalCliente> {
         const now = Date.now();
         // console.log(`[ClienteModel] upsertFromServer: Buscando cliente server_id=${cliente.id} ou localId=${cliente.localId}`);
@@ -158,6 +172,20 @@ export const ClienteModel = {
             }
 
             // console.log(`[ClienteModel] Sobrescrevendo cliente ${existing.id} com dados do servidor`);
+
+            // 🛡️ INTELLIGENT MERGE: Não apagar dados locais (como endereço) se o server mandar null (comum em sync de OS)
+            const razaoSocial = cliente.razaoSocial || existing.razao_social;
+            const nomeFantasia = cliente.nomeFantasia || existing.nome_fantasia;
+            const cnpj = cliente.cnpj || existing.cnpj;
+            const cpf = cliente.cpf || existing.cpf;
+            const logradouro = cliente.logradouro || existing.logradouro;
+            const numero = cliente.numero || existing.numero;
+            const complemento = cliente.complemento || existing.complemento;
+            const bairro = cliente.bairro || existing.bairro;
+            const cidade = cliente.cidade || existing.cidade;
+            const estado = cliente.estado || existing.estado;
+            const cep = cliente.cep || existing.cep;
+
             // Atualizar existente
             await databaseService.runUpdate(
                 `UPDATE clientes SET
@@ -170,21 +198,21 @@ export const ClienteModel = {
          WHERE id = ?`,
                 [
                     cliente.id,
-                    cliente.razaoSocial,
-                    cliente.nomeFantasia || null,
-                    cliente.cnpj || null,
-                    cliente.cpf || null,
-                    cliente.tipoPessoa || null,
-                    cliente.contato,
-                    cliente.email,
-                    cliente.status,
-                    cliente.logradouro || null,
-                    cliente.numero || null,
-                    cliente.complemento || null,
-                    cliente.bairro || null,
-                    cliente.cidade || null,
-                    cliente.estado || null,
-                    cliente.cep || null,
+                    razaoSocial,
+                    nomeFantasia,
+                    cnpj,
+                    cpf,
+                    cliente.tipoPessoa || existing.tipo_pessoa,
+                    cliente.contato || existing.contato,
+                    cliente.email || existing.email,
+                    cliente.status || existing.status,
+                    logradouro,
+                    numero,
+                    complemento,
+                    bairro,
+                    cidade,
+                    estado,
+                    cep,
                     now,
                     now,
                     existing.id
@@ -353,7 +381,7 @@ export const ClienteModel = {
 
         // Remover da fila de sync
         await databaseService.runDelete(
-            `DELETE FROM sync_queue WHERE entity_type = 'cliente' AND entity_local_id = ?`,
+            `DELETE FROM sync_queue WHERE resource = 'cliente' AND temp_id = ?`,
             [localId]
         );
     },
@@ -368,7 +396,7 @@ export const ClienteModel = {
         );
 
         await databaseService.runUpdate(
-            `UPDATE sync_queue SET error_message = ? WHERE entity_type = 'cliente' AND entity_local_id = ?`,
+            `UPDATE sync_queue SET error_message = ? WHERE resource = 'cliente' AND temp_id = ?`,
             [errorMessage, localId]
         );
     },

@@ -4,9 +4,13 @@
 // import { despesaService } from './despesaService';
 import { ClienteModel } from './database/models/ClienteModel';
 import { OSModel } from './database/models/OSModel';
+import { VeiculoModel } from './database/models/VeiculoModel';
+import { PecaModel } from './database/models/PecaModel';
 import { DespesaModel } from './database/models/DespesaModel';
 import { SyncQueueModel } from './database/models/SyncQueueModel';
+import * as SecureStore from 'expo-secure-store';
 import { NetInfoState } from '@react-native-community/netinfo';
+import api from './api';
 
 export const SyncService = {
     /**
@@ -27,15 +31,90 @@ export const SyncService = {
             await this.processQueue();
 
             // 2. PULL (Server -> Local)
-            await this.syncClientes();
-            await this.syncOS();
-            await this.syncDespesas();
+            try {
+                await this.syncMetadata(); // Users and Part Types FIRST
+            } catch (err) {
+                console.error('⚠️ Falha ao sincronizar metadados:', err);
+            }
+
+            try {
+                await this.syncClientes();
+            } catch (err) {
+                console.error('⚠️ Falha ao sincronizar clientes:', err);
+            }
+
+            try {
+                await this.syncOS();
+            } catch (err) {
+                console.error('⚠️ Falha ao sincronizar OS:', err);
+            }
+
+            try {
+                await this.syncDespesas();
+            } catch (err) {
+                console.error('⚠️ Falha ao sincronizar despesas:', err);
+            }
 
             console.log('✅ Sincronização Completa Finalizada!');
         } catch (error) {
             console.error('❌ Erro na sincronização:', error);
         }
     },
+
+    async syncMetadata(): Promise<void> {
+        console.log('📥 Baixando Metadados (Usuários e Tipos de Peça)...');
+        try {
+            await this.syncUsers();
+            await this.syncTiposPeca();
+        } catch (error) {
+            console.error('❌ Erro ao baixar metadados:', error);
+        }
+    },
+
+    /**
+     * Sincroniza Clientes (Incremental)
+     */
+    async syncClientes(): Promise<void> {
+        // 🛡️ REPAIR MAGIC: Forçar re-sync se o usuário estiver com problemas de endereço null
+        // Isso roda uma vez e depois o SecureStore garante que não roda mais (a menos que apaguem o dado)
+        const hasForcedRepair = await SecureStore.getItemAsync('has_forced_address_repair_v1');
+        if (!hasForcedRepair) {
+            console.log('🧹 REPAIR: Forçando re-sync de clientes para corrigir endereços nulos...');
+            await SecureStore.deleteItemAsync('last_sync_clientes');
+            await SecureStore.setItemAsync('has_forced_address_repair_v1', 'true');
+        }
+
+        const lastSync = await SecureStore.getItemAsync('last_sync_clientes');
+        console.log(`📥 Baixando Clientes (Incremental)... Last: ${lastSync || 'NEVER'}`);
+
+        try {
+            const response = await api.get('/clientes', {
+                params: { since: lastSync }
+            });
+
+            const { data, deletedIds } = response.data;
+
+            if (data.length > 0 || deletedIds?.length > 0) {
+                await ClienteModel.upsertBatch(data);
+
+                // Process deletes if any
+                if (deletedIds?.length > 0) {
+                    // Implementar deleção lógica ou física se necessário
+                    // await ClienteModel.deleteBatch(deletedIds);
+                }
+
+                // Salvar novo timestamp
+                await SecureStore.setItemAsync('last_sync_clientes', new Date().toISOString());
+                console.log(`✅ Clientes sincronizados: ${data.length} novos/atualizados`);
+            } else {
+                console.log('✅ Clientes já atualizados.');
+            }
+        } catch (error) {
+            console.error('❌ Erro ao baixar clientes:', error);
+            throw error;
+        }
+    },
+
 
     /**
      * Processa a fila de sincronização (PUSH)
@@ -70,6 +149,22 @@ export const SyncService = {
                         await OSModel.markAsSynced(pendingItem.temp_id, serverId);
                     }
                 }
+                else if (pendingItem.resource === 'veiculo') {
+                    serverId = await this.syncVeiculoItem(pendingItem.action, pendingItem.temp_id, payload);
+
+                    if (pendingItem.action === 'CREATE' && serverId) {
+                        console.log(`✅ Veículo sincronizado: UUID ${pendingItem.temp_id} → ID ${serverId}`);
+                        await VeiculoModel.markAsSynced(pendingItem.temp_id, serverId);
+                    }
+                }
+                else if (pendingItem.resource === 'peca') {
+                    serverId = await this.syncPecaItem(pendingItem.action, pendingItem.temp_id, payload);
+
+                    if (pendingItem.action === 'CREATE' && serverId) {
+                        console.log(`✅ Peça sincronizada: UUID ${pendingItem.temp_id} → ID ${serverId}`);
+                        await PecaModel.markAsSynced(pendingItem.temp_id, serverId);
+                    }
+                }
                 else if (pendingItem.resource === 'despesa') {
                     serverId = await this.syncDespesaItem(pendingItem.action, pendingItem.temp_id, payload);
 
@@ -88,8 +183,11 @@ export const SyncService = {
                         if (pendingItem.resource === 'cliente') {
                             await ClienteModel.markAsSynced(pendingItem.temp_id, serverId);
                         } else if (pendingItem.resource === 'os') {
-                            // OSModel.markAsSynced cuida do status também
                             await OSModel.markAsSynced(pendingItem.temp_id, serverId);
+                        } else if (pendingItem.resource === 'veiculo') {
+                            await VeiculoModel.markAsSynced(pendingItem.temp_id, serverId);
+                        } else if (pendingItem.resource === 'peca') {
+                            await PecaModel.markAsSynced(pendingItem.temp_id, serverId);
                         } else if (pendingItem.resource === 'despesa') {
                             await DespesaModel.markAsSynced(pendingItem.temp_id, serverId);
                         }
@@ -100,7 +198,14 @@ export const SyncService = {
                 }
 
             } catch (error: any) {
-                console.error(`❌ Erro ao processar item ${pendingItem.id}:`, error);
+                const api = (await import('./api')).default;
+                const baseURL = api.defaults.baseURL;
+                console.error(`❌ Erro ao processar item ${pendingItem.id} [Resource: ${pendingItem.resource}]:`, {
+                    message: error.message,
+                    code: error.code,
+                    status: error.response?.status,
+                    baseURL: baseURL
+                });
 
                 // Detectar tipo de erro
                 const errorType = this.detectErrorType(error);
@@ -164,7 +269,10 @@ export const SyncService = {
 
             try {
                 const api = (await import('./api')).default;
-                const response = await api.post('/clientes', payload);
+                const response = await api.post('/clientes', {
+                    ...payload,
+                    localId: localId // 🆔 IMPORTANTE
+                });
                 console.log(`[SyncService] ✅ Cliente criado no servidor com ID ${response.data.id}`);
                 return response.data.id;
             } catch (error: any) {
@@ -205,8 +313,6 @@ export const SyncService = {
 
         if (action === 'CREATE') {
             // 🆕 Resolve Client FK dynamically
-            // O payload persiste o estado do momento da criação (clienteId pode ser null)
-            // Precisamos atualizar com o ID real do cliente que acabou de ser sincronizado
             if (payload.clienteLocalId && (!payload.clienteId || payload.clienteId === 0)) {
                 const client = await ClienteModel.getByLocalId(payload.clienteLocalId);
                 if (client && client.server_id) {
@@ -214,14 +320,15 @@ export const SyncService = {
                     console.log(`[SyncService] 🔗 Resolved Cliente FK for OS: ${client.server_id}`);
                 } else {
                     console.warn(`[SyncService] ⚠️ Could not resolve Cliente FK for OS ${localId}. Client might not be synced yet.`);
-                    // Lançar erro para forçar retry (o Cliente deve sincronizar na próxima tentativa)
                     throw new Error('Dependência de Cliente não satisfeita (sem server_id)');
                 }
             }
 
-            // Chamar API diretamente (não usar osService.createOS que tem lógica offline)
             const api = (await import('./api')).default;
-            const response = await api.post('/ordens-servico', payload);
+            const response = await api.post('/ordens-servico', {
+                ...payload,
+                localId: localId // 🆔 IMPORTANTE
+            });
             console.log(`[SyncService] OS created on server`, { serverId: response.data.id });
             return response.data.id;
         } else if (action === 'UPDATE') {
@@ -234,15 +341,26 @@ export const SyncService = {
 
             if (!localOS.server_id) throw new Error('OS sem server_id para update');
 
-            // Tratamento especial para status vs update completo
             const api = (await import('./api')).default;
 
             if (payload.status && Object.keys(payload).length === 1) {
                 await api.patch(`/ordens-servico/${localOS.server_id}/status`, payload);
             } else {
-                // Update genérico (PATCH)
-                // Remover campos que não devem ir para o servidor se existirem no payload (ex: id, sync_status)
                 const { id, sync_status, localId, ...cleanPayload } = payload;
+
+                if (cleanPayload.usuario_id !== undefined) {
+                    cleanPayload.usuarioId = cleanPayload.usuario_id;
+                    delete cleanPayload.usuario_id;
+                }
+                if (cleanPayload.usuario_nome !== undefined) {
+                    cleanPayload.usuarioNome = cleanPayload.usuario_nome;
+                    delete cleanPayload.usuario_nome;
+                }
+                if (cleanPayload.usuario_email !== undefined) {
+                    cleanPayload.usuarioEmail = cleanPayload.usuario_email;
+                    delete cleanPayload.usuario_email;
+                }
+
                 await api.patch(`/ordens-servico/${localOS.server_id}`, cleanPayload);
                 console.log(`[SyncService] ✅ OS atualizada no servidor (PATCH): ID ${localOS.server_id}`);
             }
@@ -250,10 +368,92 @@ export const SyncService = {
         } else if (action === 'DELETE') {
             const localOS = await OSModel.getByLocalId(localId);
             if (localOS?.server_id) {
-                // DELETE não implementado no osService original? Verificar.
-                // await osService.delete(localOS.server_id); 
+                const api = (await import('./api')).default;
+                // await api.delete(`/ordens-servico/${localOS.server_id}`);
             }
             return null;
+        }
+        return null;
+    },
+
+    async syncVeiculoItem(action: string, localId: string, payload: any): Promise<number | null> {
+        console.log(`[SyncService] Syncing veículo: ${action}`, { localId });
+
+        if (action === 'CREATE') {
+            // 🆕 Resolve OS FK dynamically
+            if (payload.osLocalId && (!payload.ordemServicoId || payload.ordemServicoId === 0)) {
+                const os = await OSModel.getByLocalId(payload.osLocalId);
+                if (os && os.server_id) {
+                    payload.ordemServicoId = os.server_id;
+                    console.log(`[SyncService] 🔗 Resolved OS FK for Veiculo: ${os.server_id}`);
+                } else {
+                    console.warn(`[SyncService] ⚠️ Could not resolve OS FK for Veiculo ${localId}. OS might not be synced yet.`);
+                    throw new Error('Dependência de OS não satisfeita (sem server_id)');
+                }
+            }
+
+            const api = (await import('./api')).default;
+            const response = await api.post('/ordens-servico/veiculos', {
+                ...payload,
+                localId: localId // 🆔 IMPORTANTE
+            });
+            console.log(`[SyncService] Veículo created on server`, { serverId: response.data.id });
+            return response.data.id;
+        } else if (action === 'UPDATE') {
+            const localVeiculo = await VeiculoModel.getByLocalId(localId);
+            if (!localVeiculo?.server_id) throw new Error('Veículo sem server_id para update');
+
+            const api = (await import('./api')).default;
+            await api.patch(`/ordens-servico/veiculos/${localVeiculo.server_id}`, payload);
+            return localVeiculo.server_id;
+        } else if (action === 'DELETE') {
+            const api = (await import('./api')).default;
+            const VeiculoModel = (await import('./database/models/VeiculoModel')).VeiculoModel;
+            const item = await VeiculoModel.getByLocalId(localId);
+            if (item?.server_id) {
+                await api.delete(`/ordens-servico/veiculos/${item.server_id}`);
+            }
+        }
+        return null;
+    },
+
+    async syncPecaItem(action: string, localId: string, payload: any): Promise<number | null> {
+        console.log(`[SyncService] Syncing peça: ${action}`, { localId });
+
+        if (action === 'CREATE') {
+            // 🆕 Resolve Veiculo FK dynamically
+            if (payload.veiculoLocalId && (!payload.veiculoId || payload.veiculoId === 0)) {
+                const veiculo = await VeiculoModel.getByLocalId(payload.veiculoLocalId);
+                if (veiculo && veiculo.server_id) {
+                    payload.veiculoId = veiculo.server_id;
+                    console.log(`[SyncService] 🔗 Resolved Veiculo FK for Peca: ${veiculo.server_id}`);
+                } else {
+                    console.warn(`[SyncService] ⚠️ Could not resolve Veiculo FK for Peca ${localId}. Veiculo might not be synced yet.`);
+                    throw new Error('Dependência de Veículo não satisfeita (sem server_id)');
+                }
+            }
+
+            const api = (await import('./api')).default;
+            const response = await api.post('/ordens-servico/pecas', {
+                ...payload,
+                localId: localId // 🆔 IMPORTANTE
+            });
+            console.log(`[SyncService] Peça created on server`, { serverId: response.data.id });
+            return response.data.id;
+        } else if (action === 'UPDATE') {
+            const localPeca = await PecaModel.getByLocalId(localId);
+            if (!localPeca?.server_id) throw new Error('Peça sem server_id para update');
+
+            const api = (await import('./api')).default;
+            await api.patch(`/ordens-servico/pecas/${localPeca.server_id}`, payload);
+            return localPeca.server_id;
+        } else if (action === 'DELETE') {
+            const { PecaModel } = require('./database/models/PecaModel');
+            const item = await PecaModel.getByLocalId(localId);
+            if (item?.server_id) {
+                const api = (await import('./api')).default;
+                await api.delete(`/ordens-servico/pecas/${item.server_id}`);
+            }
         }
         return null;
     },
@@ -276,18 +476,22 @@ export const SyncService = {
 
     // --- Helpers de PULL ---
 
-    async syncClientes(): Promise<void> {
-        console.log('📥 Baixando Clientes...');
-        const clienteService = (await import('./clienteService')).clienteService;
-        const clientes = await clienteService.getAll();
-        await ClienteModel.upsertBatch(clientes);
-    },
+    // syncClientes movido para cima
 
     async syncOS(): Promise<void> {
-        console.log('📥 Baixando Ordens de Serviço...');
+        console.log('📥 Baixando Ordens de Serviço (Incremental)...');
+        const lastSync = await SecureStore.getItemAsync('last_sync_os');
         const osService = (await import('./osService')).osService;
-        const osList = await osService.listOS();
-        await OSModel.upsertBatch(osList);
+        const osList = await osService.listOS(lastSync || undefined);
+
+        if (osList.length > 0) {
+            await OSModel.upsertBatch(osList);
+            console.log(`✅ ${osList.length} ordens de serviço sincronizadas.`);
+        } else {
+            console.log('ℹ️ Nenhuma OS nova/alterada.');
+        }
+
+        await SecureStore.setItemAsync('last_sync_os', new Date().toISOString());
     },
 
     async syncDespesas(): Promise<void> {
@@ -296,5 +500,18 @@ export const SyncService = {
         // const despesas = await despesaService.getAll();
         // await DespesaModel.upsertBatch(despesas);
         console.warn('Despesa sync not implemented - missing getAll method in despesaService');
+    },
+
+    async syncUsers(): Promise<void> {
+        console.log('📥 Baixando Usuários...');
+        const { userService } = await import('./userService');
+        await userService.getUsers(); // This already handles API fetch + DB upsert
+    },
+
+    async syncTiposPeca(): Promise<void> {
+        console.log('📥 Baixando Tipos de Peça...');
+        const { osService } = await import('./osService');
+        await osService.listTiposPeca(); // This already handles API fetch + DB upsert
+        console.log('✅ Tipos de Peça sincronizados.');
     }
 };

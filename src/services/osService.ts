@@ -8,7 +8,7 @@ import type {
     Cliente, ClienteRequest, ClienteFiltros,
     OrdemServico, CreateOSRequest,
     AddVeiculoRequest, AddPecaRequest, UpdateOSStatusRequest,
-    VeiculoOS, OSStatus
+    VeiculoOS, OSStatus, PecaOS
 } from '../types';
 
 export const osService = {
@@ -138,80 +138,73 @@ export const osService = {
         };
     },
 
-    listOS: async (): Promise<OrdemServico[]> => {
-        // 1. Fetch from Local DB (always fast)
-        Logger.info('[OSService] listOS - fetching from local DB');
-        let localOSList = await OSModel.getAll();
-
-        // 2. If Online & Not Force Offline, Sync with API
+    listOS: async (since?: string): Promise<OrdemServico[]> => {
+        // 1. If Online & Not Force Offline, Sync with API
         const { isConnected, isInternetReachable } = await OfflineDebug.checkConnectivity();
         if (isConnected && isInternetReachable && !OfflineDebug.isForceOffline()) {
             try {
-                Logger.info('[OSService] listOS - fetching from API');
+                Logger.info('[OSService] listOS - fetching from API', { since });
 
                 // Fetch from API
-                const response = await api.get<OrdemServico[]>('/ordens-servico');
+                const response = await api.get<OrdemServico[]>('/ordens-servico', {
+                    params: { since }
+                });
 
                 if (response.data) {
                     Logger.info(`[OSService] Received ${response.data.length} OSs from API`);
 
-                    // Update Local DB with fresh data
+                    // Update Local DB with fresh data (in a single transaction)
                     await OSModel.upsertBatch(response.data);
-
-                    // Re-fetch from Local DB to ensure consistency (and include any pending local changes via zombie check logic in upsert)
-                    // This way we return the "Merged" view of Reality (Server + Local Edits)
-                    localOSList = await OSModel.getAll();
                 }
             } catch (error) {
                 Logger.error('[OSService] API fetch failed, using local data', error);
                 // Continue with local data
             }
         } else {
-            Logger.info('[OSService] listOS - Force Offline is ON, skipping API');
+            Logger.info('[OSService] listOS - Offline or Force Offline is ON');
         }
 
-        // 3. Map to API Format
-        console.log(`[OSService] 🔄 Mapping ${localOSList.length} local records to API format...`);
-        const mappedList = await Promise.all(localOSList.map(async (local) => {
-            return await OSModel.toApiFormat(local);
-        }));
+        // 2. Fetch from Local DB using optimized JOIN (Anti-Lock)
+        Logger.info('[OSService] listOS - fetching full hierarchy from Local DB (JOIN)');
+        const mappedList = await OSModel.getAllFull();
 
         console.log(`[OSService] ✅ Returning ${mappedList.length} OS items to UI`);
         return mappedList;
     },
 
-    getOSById: async (id: number): Promise<OrdemServico> => {
+    getOSById: async (id: number | string): Promise<OrdemServico> => {
         Logger.info('[OSService] getOSById', { id });
 
-        // 1. Tentar local primeiro (Pelo Server ID)
-        let local = await OSModel.getByServerId(id);
+        try {
+            // 1. Tentar local primeiro (JOIN Otimizado) - Suporta ID numérico ou UUID
+            const localFull = await OSModel.getByIdFull(id);
 
-        // 2. Se não achar pelo Server ID, tentar pelo ID Local (caso seja uma OS criada offline)
-        if (!local) {
-            local = await OSModel.getById(id);
-            if (local) {
-                Logger.info('[OSService] Found locally via Local ID (Offline created)');
+            if (localFull) {
+                Logger.info('[OSService] Found full OS locally (JOIN)');
+                // Recalcular total por segurança (ainda local)
+                // Usamos o ID numérico do objeto local para o recálculo se necessário
+                const localId = (localFull as any).local_id_pk || localFull.id;
+                // Nota: O getByIdFull retorna formato OrdemServico. Se precisarmos recalcular, 
+                // precisaríamos do ID interno do SQLite. Por enquanto, assumimos que o JOIN trouxe dados frescos.
+                return localFull;
             }
-        } else {
-            Logger.info('[OSService] Found locally via Server ID');
+
+            // 2. Se não achar local e estiver online, buscar API
+            if (!OfflineDebug.isForceOffline()) {
+                Logger.info('[OSService] Not found locally, fetching from API');
+                const response = await api.get<OrdemServico>(`/ordens-servico/${id}`);
+
+                // Salvar no cache para acesso futuro offline
+                const localOS = await OSModel.upsertFromServer(response.data);
+
+                // Retornar formato consistente
+                return await OSModel.toApiFormat(localOS);
+            }
+        } catch (error) {
+            Logger.error('[OSService] Error in getOSById', error);
         }
 
-        if (local) {
-            return await OSModel.toApiFormat(local);
-        }
-
-        // 3. Se não achar local e estiver online, buscar API
-        // Mas idealmente o sync já deve ter trazido.
-        // Fallback API apenas se não for forceOffline
-        if (!OfflineDebug.isForceOffline()) {
-            Logger.info('[OSService] Not found locally, fetching from API');
-            const response = await api.get<OrdemServico>(`/ordens-servico/${id}`);
-            // Salvar no cache? Talvez.
-            await OSModel.upsertFromServer(response.data);
-            return response.data;
-        }
-
-        throw new Error('OS não encontrada localmente e modo offline ativo');
+        throw new Error('Ordem de serviço não encontrada.');
     },
 
     updateStatus: async (id: number, status: OSStatus): Promise<OrdemServico> => {
@@ -240,8 +233,39 @@ export const osService = {
     updateOS: async (id: number, data: any): Promise<OrdemServico> => {
         Logger.info('[OSService] updateOS called', { id, data });
 
+        // Map API keys to Local DB keys if necessary
+        const localData: any = { ...data };
+        if (data.usuarioId !== undefined) {
+            localData.usuario_id = data.usuarioId;
+            delete localData.usuarioId;
+
+            // Resolve name/email if missing to ensure UI displays correctly
+            if (!data.usuarioNome || !data.usuarioEmail) {
+                try {
+                    const { UserModel } = require('./database/models/UserModel');
+                    const users = await UserModel.getAll();
+                    const user = users.find((u: any) => u.id === data.usuarioId);
+                    if (user) {
+                        localData.usuario_nome = user.name;
+                        localData.usuario_email = user.email;
+                        console.log(`[OSService] 👤 Resolved details for responsible user ${data.usuarioId}: ${user.name}`);
+                    }
+                } catch (e) {
+                    console.error('[OSService] Failed to resolve user details', e);
+                }
+            }
+        }
+        if (data.usuarioNome !== undefined && !localData.usuario_nome) {
+            localData.usuario_nome = data.usuarioNome;
+            delete localData.usuarioNome;
+        }
+        if (data.usuarioEmail !== undefined && !localData.usuario_email) {
+            localData.usuario_email = data.usuarioEmail;
+            delete localData.usuarioEmail;
+        }
+
         // Offline-First: Salvar localmente e enfileirar sync
-        const localUpdated = await OSModel.update(id, data);
+        const localUpdated = await OSModel.update(id, localData);
         console.log('[OSService] 💾 OS Updated locally:', localUpdated ? 'SUCCESS' : 'not found');
 
         if (!localUpdated) {
@@ -251,6 +275,7 @@ export const osService = {
         // Tentar sincronizar imediatamente se estiver online
         const { isConnected, isInternetReachable } = await OfflineDebug.checkConnectivity();
         if (isConnected && isInternetReachable && !OfflineDebug.isForceOffline()) {
+            // Trigger process queue
             import('./SyncService').then(m => m.SyncService.processQueue().catch(e => console.error(e)));
         }
 
@@ -258,56 +283,46 @@ export const osService = {
     },
 
     addVeiculo: async (data: AddVeiculoRequest): Promise<VeiculoOS> => {
-        // 1. Resolver OS local para obter IDs corretos (Server vs Local)
-        // data.ordemServicoId aqui é o ID Local (PK) vindo da navegação
-        const localOS = await import('./database/models/OSModel').then(m => m.OSModel.getById(data.ordemServicoId));
+        Logger.info('[OSService] addVeiculo called', data);
 
-        if (!localOS) {
-            // Se não existir localmente, é um erro crítico de estado da UI
-            throw new Error('OS não encontrada localmente.');
+        // 1. Resolver OS Local (para garantir vínculo correto offline)
+        // O ID vindo da UI pode ser ServerID ou LocalID
+        let os = await import('./database/models/OSModel').then(m => m.OSModel.getByServerId(data.ordemServicoId));
+        if (!os) {
+            os = await import('./database/models/OSModel').then(m => m.OSModel.getById(data.ordemServicoId));
         }
 
-        const { isConnected, isInternetReachable } = await OfflineDebug.checkConnectivity();
-        const isOnline = isConnected && isInternetReachable && !OfflineDebug.isForceOffline();
-
-        // 2. Tentar API se estiver Online E a OS já estiver sincronizada (tem server_id)
-        if (isOnline && localOS.server_id) {
-            try {
-                Logger.info('[osService] Adding vehicle to API');
-                // IMPORTANTE: Enviar server_id para a API
-                const apiData = { ...data, ordemServicoId: localOS.server_id! };
-                const response = await api.post<VeiculoOS>('/ordens-servico/veiculos', apiData);
-
-                // Salvar/Atualizar localmente para manter coerência
-                await import('./database/models/VeiculoModel').then(m => m.VeiculoModel.upsertFromServer(response.data, localOS.id));
-
-                return response.data;
-            } catch (error) {
-                Logger.error('[osService] Failed to add vehicle online, falling back to local queue', error);
-                // Fallback para lógica offline abaixo se falhar rede
-            }
+        if (!os) {
+            throw new Error(`OS não encontrada para vincular veículo: ${data.ordemServicoId}`);
         }
 
-        // 3. Fallback Offline (ou OS não sincronizada)
-        Logger.info('[osService] Adding vehicle locally (Queue/Offline)');
+        Logger.info(`[OSService] Adding vehicle to OS: ${os.id} (Server: ${os.server_id}, LocalUUID: ${os.local_id})`);
+
+        // 2. Salvar localmente
         const VeiculoModel = await import('./database/models/VeiculoModel').then(m => m.VeiculoModel);
-
         const localVeiculo = await VeiculoModel.create({
             ...data,
-            // Se tiver server_id usa, senão null. O VeiculoModel vai tentar resolver.
-            ordemServicoId: localOS.server_id || 0, // Fallback safe if unresolved, likely won't sync if 0 but valid type
-            osLocalId: localOS.local_id
+            osLocalId: os.local_id
         });
 
-        // Converter para formato API para a UI não quebrar
+        console.log('[OSService] 💾 Veiculo saved locally:', localVeiculo.id);
+
+        // 3. Trigger Sync (se online)
+        const { isConnected, isInternetReachable } = await OfflineDebug.checkConnectivity();
+        if (isConnected && isInternetReachable && !OfflineDebug.isForceOffline()) {
+            // Trigger background sync
+            import('./SyncService').then(m => m.SyncService.processQueue().catch(e => console.error(e)));
+        }
+
+        // 4. Retornar formato exigido pela UI (VeiculoOS)
         return {
-            id: localVeiculo.id, // Retorna ID local temporariamente
+            id: localVeiculo.server_id || localVeiculo.id,
             placa: localVeiculo.placa,
             modelo: localVeiculo.modelo || '',
             cor: localVeiculo.cor || '',
             valorTotal: localVeiculo.valor_total || 0,
-            // Outros campos se necessário
-        } as VeiculoOS;
+            pecas: [] // Recém criado não tem peças
+        };
     },
 
     // --- PDF Sharing ---
@@ -442,18 +457,153 @@ export const osService = {
     },
 
     // --- Parts/Services ---
-    addPeca: async (data: AddPecaRequest): Promise<any> => {
-        const response = await api.post('/ordens-servico/pecas', data);
-        return response.data;
+    addPeca: async (data: AddPecaRequest): Promise<PecaOS> => {
+        Logger.info('[OSService] addPeca called', data);
+
+        // 1. Resolver Veículo Local
+        // O ID pode ser ServerID ou LocalID (PK)
+        let veiculo = await import('./database/models/VeiculoModel').then(m => m.VeiculoModel.getByServerId(data.veiculoId));
+        if (!veiculo) {
+            veiculo = await import('./database/models/VeiculoModel').then(m => m.VeiculoModel.getById(data.veiculoId));
+        }
+
+        if (!veiculo) {
+            throw new Error(`Veículo não encontrado: ${data.veiculoId}`);
+        }
+
+        // 2. Salvar localmente
+        const PecaModel = await import('./database/models/PecaModel').then(m => m.PecaModel);
+        const localPeca = await PecaModel.create({
+            ...data,
+            veiculoLocalId: veiculo.local_id
+        });
+
+        console.log('[OSService] 💾 Peca saved locally:', localPeca.id);
+
+        // 3. Recalcular Totais (Cascada)
+        try {
+            const osModel = await import('./database/models/OSModel').then(m => m.OSModel);
+            const veiculoModel = await import('./database/models/VeiculoModel').then(m => m.VeiculoModel);
+
+            await veiculoModel.recalculateTotal(veiculo.id);
+
+            // Resolver ID da OS
+            let osId = veiculo.os_id;
+            if (!osId && veiculo.os_local_id) {
+                const osLocal = await osModel.getByLocalId(veiculo.os_local_id);
+                if (osLocal) osId = osLocal.id;
+            }
+
+            if (osId) {
+                await osModel.recalculateTotal(osId);
+            }
+        } catch (recalcError) {
+            console.error('[OSService] ⚠️ Error recalculating totals:', recalcError);
+        }
+
+        // 4. Trigger Sync (se online)
+        const { isConnected, isInternetReachable } = await OfflineDebug.checkConnectivity();
+        if (isConnected && isInternetReachable && !OfflineDebug.isForceOffline()) {
+            import('./SyncService').then(m => m.SyncService.processQueue().catch(e => console.error(e)));
+        }
+
+        // 4. Retornar formato API (PecaOS)
+        return {
+            id: localPeca.server_id || localPeca.id,
+            nomePeca: localPeca.nome_peca || '',
+            valorCobrado: localPeca.valor_cobrado || 0,
+            descricao: localPeca.descricao || ''
+        };
     },
 
-    deletePeca: async (id: number): Promise<OrdemServico> => {
-        const response = await api.delete<OrdemServico>(`/ordens-servico/pecas/${id}`);
-        return response.data;
+    deletePeca: async (id: number): Promise<void> => {
+        Logger.info('[OSService] deletePeca called', { id });
+
+        // 1. Resolver peça local
+        // O ID pode ser ServerID ou LocalID
+        const PecaModel = await import('./database/models/PecaModel').then(m => m.PecaModel);
+        let peca = await PecaModel.getByServerId(id);
+        if (!peca) peca = await PecaModel.getById(id);
+
+        if (!peca) {
+            console.warn(`[OSService] Peca ${id} not found for deletion, maybe already deleted?`);
+            return;
+        }
+
+        const veiculoId = peca.veiculo_id;
+
+        // 2. Deletar localmente
+        await PecaModel.delete(peca.id);
+
+        // 3. Recalcular Totais
+        if (veiculoId) {
+            try {
+                const veiculoModel = await import('./database/models/VeiculoModel').then(m => m.VeiculoModel);
+                const osModel = await import('./database/models/OSModel').then(m => m.OSModel);
+
+                const newVeiculoTotal = await veiculoModel.recalculateTotal(veiculoId);
+
+                const v = await veiculoModel.getById(veiculoId);
+                let osId = v?.os_id;
+                if (!osId && v?.os_local_id) {
+                    const osLocal = await osModel.getByLocalId(v.os_local_id);
+                    if (osLocal) osId = osLocal.id;
+                }
+
+                if (osId) {
+                    await osModel.recalculateTotal(osId);
+                }
+            } catch (e) {
+                console.error('[OSService] Error recalculating after deletePeca', e);
+            }
+        }
+
+        // 4. Trigger Sync (se online)
+        const { isConnected, isInternetReachable } = await OfflineDebug.checkConnectivity();
+        if (isConnected && isInternetReachable && !OfflineDebug.isForceOffline()) {
+            import('./SyncService').then(m => m.SyncService.processQueue().catch(e => console.error(e)));
+        }
     },
 
     deleteVeiculo: async (id: number): Promise<void> => {
-        await api.delete(`/ordens-servico/veiculos/${id}`);
+        Logger.info('[OSService] deleteVeiculo called', { id });
+
+        const VeiculoModel = await import('./database/models/VeiculoModel').then(m => m.VeiculoModel);
+        let v = await VeiculoModel.getByServerId(id);
+        if (!v) v = await VeiculoModel.getById(id);
+
+        if (!v) {
+            console.warn(`[OSService] Veiculo ${id} not found for deletion`);
+            return;
+        }
+
+        const osIdLocal = v.os_id;
+        const osUUID = v.os_local_id;
+
+        // 1. Deletar localmente
+        await VeiculoModel.delete(v.id);
+
+        // 2. Recalcular Total da OS
+        try {
+            const osModel = await import('./database/models/OSModel').then(m => m.OSModel);
+            let osIdToRecalc = osIdLocal;
+            if (!osIdToRecalc && osUUID) {
+                const os = await osModel.getByLocalId(osUUID);
+                if (os) osIdToRecalc = os.id;
+            }
+
+            if (osIdToRecalc) {
+                await osModel.recalculateTotal(osIdToRecalc);
+            }
+        } catch (e) {
+            console.error('[OSService] Error recalculating after deleteVeiculo', e);
+        }
+
+        // 3. Trigger Sync
+        const { isConnected, isInternetReachable } = await OfflineDebug.checkConnectivity();
+        if (isConnected && isInternetReachable && !OfflineDebug.isForceOffline()) {
+            import('./SyncService').then(m => m.SyncService.processQueue().catch(e => console.error(e)));
+        }
     },
 
     deleteOS: async (id: number): Promise<void> => {

@@ -2,13 +2,14 @@ import React, { useState, useCallback } from 'react';
 import { View, Text, TouchableOpacity, ScrollView, RefreshControl, TextInput, Alert } from 'react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../contexts/AuthContext';
-import { LogOut, Plus, Users, Search, Wrench, CheckCircle, Car, Package, Activity, DollarSign } from 'lucide-react-native';
+import { LogOut, Plus, Users, Search, Wrench, CheckCircle, Car, Package, Activity, DollarSign, FileText } from 'lucide-react-native';
 import { osService } from '../services/osService';
 import { OrdemServico } from '../types';
 import { theme } from '../theme';
 import { Card } from '../components/ui';
 import { VehicleHistoryModal } from '../components/modals/VehicleHistoryModal';
 import { CyberpunkAlert, CyberpunkAlertProps } from '../components/ui/CyberpunkAlert';
+import { SimplePlateInput } from '../components/forms/SimplePlateInput';
 
 // Limpar placa helper
 const limparPlaca = (placa: string) => placa.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
@@ -18,61 +19,8 @@ export const DashboardScreen = () => {
     const { user, signOut } = useAuth();
 
     // Plate search state
-    type PlateFormat = 'MERC' | 'ANTIGA';
-    const [plateFormat, setPlateFormat] = useState<PlateFormat>('MERC');
     const [searchPlate, setSearchPlate] = useState('');
     const [isSearching, setIsSearching] = useState(false);
-
-    // Custom Alert State
-    const [alertConfig, setAlertConfig] = useState<Partial<CyberpunkAlertProps>>({ visible: false });
-
-    const [historyModal, setHistoryModal] = useState<{ isOpen: boolean; placa: string; modelo: string }>({
-        isOpen: false,
-        placa: '',
-        modelo: '',
-    });
-
-    // Plate validation helper
-    const handlePlateChange = (text: string) => {
-        // Remove non-alphanumeric chars
-        const cleaned = text.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
-
-        let formatted = '';
-        const limit = 7;
-
-        for (let i = 0; i < cleaned.length && i < limit; i++) {
-            const char = cleaned[i];
-
-            if (plateFormat === 'ANTIGA') {
-                // ABC-1234 format: 3 letters, 4 numbers
-                if (i < 3) {
-                    // Expect Letters
-                    if (/[A-Z]/.test(char)) formatted += char;
-                } else {
-                    // Expect Numbers
-                    if (/[0-9]/.test(char)) formatted += char;
-                }
-            } else {
-                // Mercosul (ABC1D23): LLLNLNN
-                if (i < 3) { // Letters (ABC)
-                    if (/[A-Z]/.test(char)) formatted += char;
-                } else if (i === 3) { // Number (1)
-                    if (/[0-9]/.test(char)) formatted += char;
-                } else if (i === 4) { // Letter (D)
-                    if (/[A-Z]/.test(char)) formatted += char;
-                } else { // Numbers (23)
-                    if (/[0-9]/.test(char)) formatted += char;
-                }
-            }
-        }
-
-        // Add hyphen for presentation if Antiga
-        if (plateFormat === 'ANTIGA' && formatted.length > 3) {
-            setSearchPlate(formatted.slice(0, 3) + '-' + formatted.slice(3));
-        } else {
-            setSearchPlate(formatted);
-        }
-    };
 
     // Stats state
     const [osList, setOsList] = useState<OrdemServico[]>([]);
@@ -165,27 +113,20 @@ export const DashboardScreen = () => {
         return acc + partsInOS;
     }, 0);
 
+    // Totais Gerais para bater com Web
+    const totalOSCount = osList.length;
+    const totalVehiclesCount = osList.reduce((acc, os) => acc + (os.veiculos?.length || 0), 0);
+
     const monthName = new Date().toLocaleDateString('pt-BR', { month: 'short' }).toUpperCase();
 
-    // Determine valid keyboard type based on cursor position/content
-    const getKeyboardType = () => {
-        const cleanLength = searchPlate.replace(/[^a-zA-Z0-9]/g, '').length;
+    // Custom Alert State
+    const [alertConfig, setAlertConfig] = useState<Partial<CyberpunkAlertProps>>({ visible: false });
 
-        if (plateFormat === 'ANTIGA') {
-            // ABC-1234: First 3 are letters, rest are numbers
-            return cleanLength >= 3 ? 'numeric' : 'default';
-        } else {
-            // Mercosul (ABC1D23)
-            // 0-2 (ABC): Default
-            if (cleanLength < 3) return 'default';
-            // 3 (1): Numeric
-            if (cleanLength === 3) return 'numeric';
-            // 4 (D): Default
-            if (cleanLength === 4) return 'default';
-            // 5-6 (23): Numeric
-            return 'numeric';
-        }
-    };
+    const [historyModal, setHistoryModal] = useState<{ isOpen: boolean; placa: string; modelo: string }>({
+        isOpen: false,
+        placa: '',
+        modelo: '',
+    });
 
     return (
         <View style={{ flex: 1, backgroundColor: theme.colors.background }}>
@@ -246,61 +187,13 @@ export const DashboardScreen = () => {
 
                     {/* Plate Search */}
                     <View style={{ marginBottom: 16 }}>
-                        {/* Format Toggle */}
-                        <View style={{ flexDirection: 'row', marginBottom: 12, backgroundColor: 'rgba(0,0,0,0.2)', padding: 2, borderRadius: 6 }}>
-                            <TouchableOpacity
-                                onPress={() => { setPlateFormat('MERC'); setSearchPlate(''); }}
-                                style={{ flex: 1, paddingVertical: 6, alignItems: 'center', backgroundColor: plateFormat === 'MERC' ? theme.colors.primary : 'transparent', borderRadius: 4 }}
-                            >
-                                <Text style={{ fontSize: 10, fontWeight: '700', color: plateFormat === 'MERC' ? '#000' : theme.colors.textMuted }}>MERCOSUL</Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity
-                                onPress={() => { setPlateFormat('ANTIGA'); setSearchPlate(''); }}
-                                style={{ flex: 1, paddingVertical: 6, alignItems: 'center', backgroundColor: plateFormat === 'ANTIGA' ? theme.colors.primary : 'transparent', borderRadius: 4 }}
-                            >
-                                <Text style={{ fontSize: 10, fontWeight: '700', color: plateFormat === 'ANTIGA' ? '#000' : theme.colors.textMuted }}>ANTIGA</Text>
-                            </TouchableOpacity>
-                        </View>
-
-                        <TextInput
-                            placeholder={plateFormat === 'MERC' ? "ABC1D23" : "ABC-1234"}
-                            placeholderTextColor={theme.colors.textMuted}
+                        <SimplePlateInput
                             value={searchPlate}
-                            onChangeText={handlePlateChange}
-                            keyboardType={getKeyboardType()}
-                            autoCapitalize="characters"
-                            style={{
-                                backgroundColor: 'rgba(0,0,0,0.4)',
-                                borderWidth: 1,
-                                borderColor: theme.colors.border,
-                                color: theme.colors.text,
-                                paddingHorizontal: 12,
-                                paddingVertical: 12,
-                                fontSize: 14,
-                                fontWeight: '700',
-                                letterSpacing: 2,
-                                marginBottom: 8,
-                            }}
+                            onChange={setSearchPlate}
+                            onSearch={handlePlateSearch}
+                            isSearching={isSearching}
+                            buttonLabel="VERIFICAR"
                         />
-                        <TouchableOpacity
-                            onPress={handlePlateSearch}
-                            disabled={isSearching}
-                            style={{
-                                flexDirection: 'row',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                backgroundColor: theme.colors.primaryMuted,
-                                borderWidth: 1,
-                                borderColor: 'rgba(212, 175, 55, 0.3)',
-                                paddingVertical: 12,
-                                borderRadius: 4,
-                            }}
-                        >
-                            <Search size={16} color={theme.colors.primary} />
-                            <Text style={{ color: theme.colors.primary, fontWeight: '700', marginLeft: 8, fontSize: 12 }}>
-                                {isSearching ? 'BUSCANDO...' : 'VERIFICAR'}
-                            </Text>
-                        </TouchableOpacity>
                     </View>
 
                     {/* Quick Action Buttons */}
@@ -341,83 +234,69 @@ export const DashboardScreen = () => {
                     </TouchableOpacity>
                 </Card>
 
-                {/* Stats Cards */}
-                <View style={{ flexDirection: 'row', gap: 12, marginBottom: 12 }}>
-                    {/* Em Execução */}
-                    <Card style={{ flex: 1 }} padding="md">
-                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                            <Text style={{ color: theme.colors.primary, fontSize: 10, fontWeight: '900', fontStyle: 'italic' }}>
-                                EM EXECUÇÃO
-                            </Text>
-                            <Wrench size={18} color={theme.colors.primary} />
+                {/* Elegant Overview Header */}
+                <View style={{ marginBottom: 24, padding: 16, backgroundColor: 'rgba(212, 175, 55, 0.05)', borderRadius: 12, borderWidth: 1, borderColor: 'rgba(212, 175, 55, 0.1)' }}>
+                    <Text style={{ color: theme.colors.primary, fontSize: 10, fontWeight: '700', letterSpacing: 2, marginBottom: 12, textAlign: 'center' }}>
+                        PANORAMA GERAL
+                    </Text>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-around' }}>
+                        <View style={{ alignItems: 'center' }}>
+                            <Text style={{ color: theme.colors.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 4 }}>TOTAL VEÍCULOS</Text>
+                            <Text style={{ color: theme.colors.textWhite, fontSize: 24, fontWeight: '900' }}>{totalVehiclesCount}</Text>
                         </View>
-                        <Text style={{ color: theme.colors.textMuted, fontSize: 8, letterSpacing: 1, marginBottom: 4 }}>
-                            OS Ativas
-                        </Text>
-                        <Text style={{ color: theme.colors.textWhite, fontSize: 36, fontWeight: '900', fontStyle: 'italic' }}>
-                            {activeOSCount}
-                        </Text>
-                        <View style={{ height: 3, backgroundColor: theme.colors.primaryMuted, marginTop: 8 }}>
-                            <View style={{ height: 3, backgroundColor: theme.colors.primary, width: `${Math.min(activeOSCount * 10, 100)}%` }} />
+                        <View style={{ width: 1, height: '100%', backgroundColor: theme.colors.border }} />
+                        <View style={{ alignItems: 'center' }}>
+                            <Text style={{ color: theme.colors.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 4 }}>TOTAL DE O.S.</Text>
+                            <Text style={{ color: theme.colors.textWhite, fontSize: 24, fontWeight: '900' }}>{totalOSCount}</Text>
                         </View>
-                    </Card>
-
-                    {/* Finalizadas */}
-                    <Card style={{ flex: 1 }} padding="md">
-                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                            <Text style={{ color: theme.colors.primary, fontSize: 10, fontWeight: '900', fontStyle: 'italic' }}>
-                                FINALIZADAS
-                            </Text>
-                            <View style={{ backgroundColor: theme.colors.primaryMuted, paddingHorizontal: 6, paddingVertical: 2, borderWidth: 1, borderColor: theme.colors.border }}>
-                                <Text style={{ color: theme.colors.textMuted, fontSize: 8, fontWeight: '700' }}>{monthName}</Text>
-                            </View>
-                        </View>
-                        <Text style={{ color: theme.colors.textMuted, fontSize: 8, letterSpacing: 1, marginBottom: 4 }}>
-                            Este Mês
-                        </Text>
-                        <Text style={{ color: theme.colors.textWhite, fontSize: 36, fontWeight: '900', fontStyle: 'italic', textAlign: 'right' }}>
-                            {completedMonthCount}
-                        </Text>
-                    </Card>
+                    </View>
                 </View>
 
-                <View style={{ flexDirection: 'row', gap: 12, marginBottom: 16 }}>
-                    {/* Veículos */}
-                    <Card style={{ flex: 1 }} padding="md">
+                {/* Subtitle for Monthly stats */}
+                <Text style={{ color: theme.colors.primary, fontSize: 11, fontWeight: '700', letterSpacing: 2, marginBottom: 16 }}>
+                    METAS E VOLUME MENSAL
+                </Text>
+
+                {/* Monthly Stats Clean Grid */}
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
+                    {/* Em Execução */}
+                    <Card style={{ width: '48%', marginBottom: 4 }} padding="md">
                         <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                            <Text style={{ color: theme.colors.primary, fontSize: 10, fontWeight: '900', fontStyle: 'italic' }}>
-                                VEÍCULOS
-                            </Text>
-                            <Car size={18} color={theme.colors.primary} />
+                            <Text style={{ color: theme.colors.primary, fontSize: 9, fontWeight: '900' }}>EM EXECUÇÃO</Text>
+                            <Wrench size={16} color={theme.colors.primary} />
                         </View>
-                        <Text style={{ color: theme.colors.textMuted, fontSize: 8, letterSpacing: 1, marginBottom: 4 }}>
-                            Atendidos no Mês
-                        </Text>
-                        <Text style={{ color: theme.colors.textWhite, fontSize: 36, fontWeight: '900', fontStyle: 'italic' }}>
-                            {vehiclesThisMonth}
-                        </Text>
-                        <View style={{ height: 3, backgroundColor: theme.colors.primaryMuted, marginTop: 8 }}>
-                            <View style={{ height: 3, backgroundColor: theme.colors.primary, width: `${Math.min(vehiclesThisMonth * 2, 100)}%` }} />
-                        </View>
+                        <Text style={{ color: theme.colors.textWhite, fontSize: 28, fontWeight: '900' }}>{activeOSCount}</Text>
+                        <Text style={{ color: theme.colors.textMuted, fontSize: 8, marginTop: 4 }}>OS Ativas</Text>
                     </Card>
 
-                    {/* Peças/Serviços */}
-                    <Card style={{ flex: 1 }} padding="md">
+                    {/* Finalizadas Mês */}
+                    <Card style={{ width: '48%', marginBottom: 4 }} padding="md">
                         <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                            <Text style={{ color: theme.colors.primary, fontSize: 10, fontWeight: '900', fontStyle: 'italic' }}>
-                                PEÇAS/SERV.
-                            </Text>
-                            <Package size={18} color={theme.colors.primary} />
+                            <Text style={{ color: theme.colors.primary, fontSize: 9, fontWeight: '900' }}>FINALIZADAS</Text>
+                            <CheckCircle size={16} color={theme.colors.primary} />
                         </View>
-                        <Text style={{ color: theme.colors.textMuted, fontSize: 8, letterSpacing: 1, marginBottom: 4 }}>
-                            Volume no Mês
-                        </Text>
-                        <Text style={{ color: theme.colors.textWhite, fontSize: 36, fontWeight: '900', fontStyle: 'italic' }}>
-                            {partsThisMonth}
-                        </Text>
-                        <View style={{ height: 3, backgroundColor: theme.colors.primaryMuted, marginTop: 8 }}>
-                            <View style={{ height: 3, backgroundColor: theme.colors.primary, width: `${Math.min(partsThisMonth, 100)}%` }} />
+                        <Text style={{ color: theme.colors.textWhite, fontSize: 28, fontWeight: '900' }}>{completedMonthCount}</Text>
+                        <Text style={{ color: theme.colors.textMuted, fontSize: 8, marginTop: 4 }}>{monthName}</Text>
+                    </Card>
+
+                    {/* Veículos Mês */}
+                    <Card style={{ width: '48%' }} padding="md">
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                            <Text style={{ color: theme.colors.primary, fontSize: 9, fontWeight: '900' }}>VEÍCULOS</Text>
+                            <Car size={16} color={theme.colors.primary} />
                         </View>
+                        <Text style={{ color: theme.colors.textWhite, fontSize: 28, fontWeight: '900' }}>{vehiclesThisMonth}</Text>
+                        <Text style={{ color: theme.colors.textMuted, fontSize: 8, marginTop: 4 }}>Mês atual</Text>
+                    </Card>
+
+                    {/* Volume de Serviços */}
+                    <Card style={{ width: '48%' }} padding="md">
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                            <Text style={{ color: theme.colors.primary, fontSize: 9, fontWeight: '900' }}>SERVIÇOS</Text>
+                            <Package size={16} color={theme.colors.primary} />
+                        </View>
+                        <Text style={{ color: theme.colors.textWhite, fontSize: 28, fontWeight: '900' }}>{partsThisMonth}</Text>
+                        <Text style={{ color: theme.colors.textMuted, fontSize: 8, marginTop: 4 }}>Concluídos</Text>
                     </Card>
                 </View>
             </ScrollView>

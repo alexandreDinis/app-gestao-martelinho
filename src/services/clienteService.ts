@@ -12,8 +12,10 @@ const Logger = {
 };
 
 export const clienteService = {
-    getAll: async (): Promise<Cliente[]> => {
-        const response = await api.get<Cliente[]>('/clientes');
+    getAll: async (since?: string): Promise<Cliente[]> => {
+        const response = await api.get<Cliente[]>('/clientes', {
+            params: { since }
+        });
         return response.data;
     },
 
@@ -97,7 +99,7 @@ export const clienteService = {
                 ...payload,
                 // Garantir que campos obrigatórios não sejam perdidos se não vierem no payload
                 razaoSocial: payload.razaoSocial || localCliente.razao_social,
-                nomeFantasia: payload.nomeFantasia || localCliente.nome_fantasia,
+                nomeFantasia: payload.nomeFantasia || localCliente.nome_fantasia || undefined,
                 contato: payload.contato || localCliente.contato || '',
                 email: payload.email || localCliente.email || '',
                 status: (payload.status || localCliente.status) as 'ATIVO' | 'INATIVO',
