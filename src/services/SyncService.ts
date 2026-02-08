@@ -7,6 +7,7 @@ import { DespesaModel } from './database/models/DespesaModel';
 import { SyncQueueModel } from './database/models/SyncQueueModel';
 import * as SecureStore from 'expo-secure-store';
 import api from './api';
+import { authService } from './authService';
 
 export const SyncService = {
     // --- MUTEX STATE ---
@@ -42,6 +43,24 @@ export const SyncService = {
     },
 
     /**
+     * Helper: Generate unique marker key for Multi-tenancy & Multi-environment
+     * Format: {key}_{baseHash}_{empresaId}
+     */
+    getMarkerKey(key: string, baseHash: string, empresaId: number): string {
+        return `${key}_${baseHash}_${empresaId}`;
+    },
+
+    /**
+     * Helper: Generate Base Hash from API URL
+     */
+    getBaseHash(): string {
+        const url = api.defaults.baseURL || '';
+        // Simple hash function (or just clean string)
+        // Remove protocol and special chars
+        return url.replace(/https?:\/\//, '').replace(/[^a-zA-Z0-9]/g, '_');
+    },
+
+    /**
      * Sincroniza tudo (SERIALIZED & COALESCED)
      */
     async syncAll(isConnected: boolean, caller = 'unknown'): Promise<void> {
@@ -72,6 +91,16 @@ export const SyncService = {
 
         console.log(`🔄 Iniciando Sincronização Completa (Locked) [Caller: ${caller}]...`);
 
+        // 🔐 Security: Get Session Claims
+        const session = await authService.getSessionClaims();
+        if (!session) {
+            console.warn('⚠️ Sync skipped: No active session found.');
+            return;
+        }
+
+        const baseHash = this.getBaseHash();
+        const { empresaId } = session;
+
         try {
             // 0. Retry Strategy
             await SyncQueueModel.retryAllFailed();
@@ -88,14 +117,14 @@ export const SyncService = {
 
             // 3. PULL Clientes
             try {
-                await this._syncClientesNoLock();
+                await this._syncClientesNoLock(session);
             } catch (err) {
                 console.error('⚠️ Falha ao sincronizar clientes:', err);
             }
 
             // 4. PULL OS
             try {
-                await this._syncOSNoLock();
+                await this._syncOSNoLock(session);
             } catch (err) {
                 console.error('⚠️ Falha ao sincronizar OS:', err);
             }
@@ -108,9 +137,11 @@ export const SyncService = {
             }
 
             console.log('✅ Sincronização Completa Finalizada!');
-            // Only set global marker if successful.
-            // TODO: In PR 2, this will be per-tenant/env.
-            await SecureStore.setItemAsync('last_full_sync_at', new Date().toISOString());
+
+            // Set Global Marker (Multi-tenant)
+            const globalMarkerKey = this.getMarkerKey('last_full_sync_at', baseHash, empresaId);
+            await SecureStore.setItemAsync(globalMarkerKey, new Date().toISOString());
+
         } catch (error) {
             console.error('❌ Erro na sincronização:', error);
             throw error; // Propagate to let caller know it failed
@@ -152,18 +183,29 @@ export const SyncService = {
 
         this._checkForUpdatesPromise = (async () => {
             try {
-                // 🛡️ SANITY CHECK: Se bando local vazio = BOOTSTRAP_REQUIRED.
-                // Independentemente de se existe marker ou não (pode ser marker de outro tenant/env ou corrompido).
-                const localCount = await OSModel.getCount();
+                // 🔐 Security: Session Check
+                const session = await authService.getSessionClaims();
+                if (!session) {
+                    console.log(`[SyncService] No session. Updates unavailable.`);
+                    return { status: 'UP_TO_DATE', serverTime: null };
+                }
+
+                const baseHash = this.getBaseHash();
+                const { empresaId } = session;
+
+                // 🛡️ SANITY CHECK: Se banco local desta empresa estiver vazio, força bootstrap
+                const localCount = await OSModel.getCountByEmpresa(empresaId);
 
                 if (localCount === 0) {
-                    console.log(`[SyncService] ⚠️ Local OS count is 0. Forcing BOOTSTRAP_REQUIRED.`);
+                    console.log(`[SyncService] ⚠️ Local OS count for Empresa ${empresaId} is 0. Forcing BOOTSTRAP_REQUIRED.`);
                     return { status: 'BOOTSTRAP_REQUIRED', serverTime: null };
                 }
 
-                const lastFullSync = await SecureStore.getItemAsync('last_full_sync_at');
+                const markerKey = this.getMarkerKey('last_full_sync_at', baseHash, empresaId);
+                const lastFullSync = await SecureStore.getItemAsync(markerKey);
+
                 if (!lastFullSync) {
-                    console.log(`[SyncService] ⚠️ Missing full sync marker. BOOTSTRAP REQUIRED.`);
+                    console.log(`[SyncService] ⚠️ Missing full sync marker (${markerKey}). BOOTSTRAP REQUIRED.`);
                     return { status: 'BOOTSTRAP_REQUIRED', serverTime: null };
                 }
 
@@ -171,8 +213,11 @@ export const SyncService = {
                 const status = response.data;
                 this._lastCheckForUpdates = Date.now();
 
-                const lastSyncClientes = await SecureStore.getItemAsync('last_sync_clientes');
-                const lastSyncOS = await SecureStore.getItemAsync('last_sync_os');
+                const clientesKey = this.getMarkerKey('last_sync_clientes', baseHash, empresaId);
+                const osKey = this.getMarkerKey('last_sync_os', baseHash, empresaId);
+
+                const lastSyncClientes = await SecureStore.getItemAsync(clientesKey);
+                const lastSyncOS = await SecureStore.getItemAsync(osKey);
 
                 let hasUpdates = false;
 
@@ -209,16 +254,25 @@ export const SyncService = {
     async tryBootSync(isConnected: boolean): Promise<void> {
         if (!isConnected) return;
 
-        const lastFullSync = await SecureStore.getItemAsync('last_full_sync_at');
-        const localCount = await OSModel.getCount();
+        const session = await authService.getSessionClaims();
+        if (!session) return;
+
+        const baseHash = this.getBaseHash();
+        const markerKey = this.getMarkerKey('last_full_sync_at', baseHash, session.empresaId);
+
+        const lastFullSync = await SecureStore.getItemAsync(markerKey);
 
         if (!lastFullSync) {
-            console.log(`🚀 BOOTSTRAP: Start full sync... (Missing Marker)`);
+            console.log(`🚀 BOOTSTRAP: Start full sync for Empresa ${session.empresaId}... (Missing Marker)`);
             await this.syncAll(true, 'SyncEngine.bootstrap');
-            await SecureStore.setItemAsync('last_full_sync_at', new Date().toISOString());
+            // Marker is set in syncAll upon success
         } else {
             console.log('⚡ FAST BOOT: Checking updates only...');
-            await this.checkForUpdates(false, 'SyncEngine.boot');
+            const result = await this.checkForUpdates(false, 'SyncEngine.boot');
+            if (result.status === 'BOOTSTRAP_REQUIRED') {
+                console.log('🚀 BOOTSTRAP: Safety fallback triggered (Local DB empty or corrupted marker). Syncing all...');
+                await this.syncAll(true, 'SyncEngine.boot_recover');
+            }
         }
     },
 
@@ -233,27 +287,37 @@ export const SyncService = {
     },
 
     async syncClientes(): Promise<void> {
-        return this.runExclusive(() => this._syncClientesNoLock());
+        const session = await authService.getSessionClaims();
+        if (!session) return;
+        return this.runExclusive(() => this._syncClientesNoLock(session));
     },
 
-    async _syncClientesNoLock(): Promise<void> {
-        const hasForcedRepair = await SecureStore.getItemAsync('has_forced_address_repair_v1');
+    async _syncClientesNoLock(session: { userId: number; empresaId: number }): Promise<void> {
+        const baseHash = this.getBaseHash();
+        const { empresaId } = session;
+        const markerKey = this.getMarkerKey('last_sync_clientes', baseHash, empresaId);
+
+        // Address repair hack (per-tenant now?)
+        // Let's keep it global or make it per tenant. Safer per tenant.
+        const repairKey = this.getMarkerKey('has_forced_address_repair_v1', baseHash, empresaId);
+        const hasForcedRepair = await SecureStore.getItemAsync(repairKey);
+
         if (!hasForcedRepair) {
             console.log('🧹 REPAIR: Forçando re-sync de clientes para corrigir endereços nulos...');
-            await SecureStore.deleteItemAsync('last_sync_clientes');
-            await SecureStore.setItemAsync('has_forced_address_repair_v1', 'true');
+            await SecureStore.deleteItemAsync(markerKey);
+            await SecureStore.setItemAsync(repairKey, 'true');
         }
 
-        const lastSync = await SecureStore.getItemAsync('last_sync_clientes');
+        const lastSync = await SecureStore.getItemAsync(markerKey);
         const syncStart = new Date().toISOString();
 
         try {
             // 🛡️ Safety: If local DB is empty, IGNORE last_sync and force full pull
-            const localCount = await ClienteModel.getCount();
+            const localCount = await ClienteModel.getCountByEmpresa(empresaId);
             const effectiveSince = localCount === 0 ? undefined : lastSync;
 
             if (localCount === 0 && lastSync) {
-                console.log('⚠️ Local Client DB is empty. Forcing full pull (ignoring last_sync).');
+                console.log(`⚠️ Local Client DB is empty for Empresa ${empresaId}. Forcing full pull (ignoring last_sync).`);
             }
 
             const response = await api.get('/clientes', { params: { since: effectiveSince } });
@@ -264,7 +328,7 @@ export const SyncService = {
                 await ClienteModel.upsertBatch(data);
                 console.log(`✅ Clientes sincronizados: ${data.length} novos/atualizados`);
             }
-            await SecureStore.setItemAsync('last_sync_clientes', syncStart);
+            await SecureStore.setItemAsync(markerKey, syncStart);
         } catch (error) {
             console.error('❌ Erro ao baixar clientes:', error);
             throw error;
@@ -370,9 +434,6 @@ export const SyncService = {
                 console.error(`❌ Erro item ${item.id}:`, error.message);
                 const errorType = this.detectErrorType(error);
                 await SyncQueueModel.markAttempt(item.id, false, `${errorType}: ${error.message}`);
-
-                // If critical dependency error (422), maybe invalidate parent? 
-                // For now, backoff handles it.
             }
         }
     },
@@ -534,22 +595,28 @@ export const SyncService = {
     },
 
     async syncOS(): Promise<void> {
-        return this.runExclusive(() => this._syncOSNoLock());
+        const session = await authService.getSessionClaims();
+        if (!session) return;
+        return this.runExclusive(() => this._syncOSNoLock(session));
     },
 
-    async _syncOSNoLock(): Promise<void> {
+    async _syncOSNoLock(session: { userId: number; empresaId: number }): Promise<void> {
         console.log('📥 Baixando Ordens de Serviço (Incremental)...');
-        const lastSync = await SecureStore.getItemAsync('last_sync_os');
+        const baseHash = this.getBaseHash();
+        const { empresaId } = session;
+        const markerKey = this.getMarkerKey('last_sync_os', baseHash, empresaId);
+
+        const lastSync = await SecureStore.getItemAsync(markerKey);
         const syncStart = new Date().toISOString();
         try {
             const { osService } = await import('./osService');
 
-            // 🛡️ Safety: If local DB is empty, IGNORE last_sync and force full pull
-            const localCount = await OSModel.getCount();
+            // 🛡️ Safety: If local DB is empty for this enterprise, IGNORE last_sync and force full pull
+            const localCount = await OSModel.getCountByEmpresa(empresaId);
             const effectiveSince = localCount === 0 ? undefined : (lastSync || undefined);
 
             if (localCount === 0 && lastSync) {
-                console.log('⚠️ Local OS DB is empty. Forcing full pull (ignoring last_sync).');
+                console.log(`⚠️ Local OS DB is empty for Empresa ${empresaId}. Forcing full pull (ignoring last_sync).`);
             }
 
             const osList = await osService.fetchFromApi(effectiveSince);
@@ -557,7 +624,7 @@ export const SyncService = {
                 await OSModel.upsertBatch(osList);
                 console.log(`✅ ${osList.length} ordens de serviço sincronizadas.`);
             }
-            await SecureStore.setItemAsync('last_sync_os', syncStart);
+            await SecureStore.setItemAsync(markerKey, syncStart);
         } catch (error) {
             console.error('❌ Erro ao sincronizar OS (Pull):', error);
         }

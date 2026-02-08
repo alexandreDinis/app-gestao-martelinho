@@ -25,6 +25,14 @@ export const ClienteModel = {
         return result?.count || 0;
     },
 
+    async getCountByEmpresa(empresaId: number): Promise<number> {
+        const result = await databaseService.getFirst<{ count: number }>(
+            `SELECT COUNT(*) as count FROM clientes WHERE empresa_id = ?`,
+            [empresaId]
+        );
+        return result?.count || 0;
+    },
+
     /**
      * Buscar cliente por ID local
      */
@@ -75,7 +83,7 @@ export const ClienteModel = {
     /**
      * Criar cliente local (para uso offline)
      */
-    async create(data: ClienteRequest, syncStatus: SyncStatus = 'PENDING_CREATE'): Promise<LocalCliente> {
+    async create(data: ClienteRequest & { empresaId?: number }, syncStatus: SyncStatus = 'PENDING_CREATE'): Promise<LocalCliente> {
         const now = Date.now();
         const localId = uuidv4();
         const uuid = localId; // Usando localId como UUID por enquanto ou gerando outro se necessário. O prompt pediu "Adicione colunas... uuid". Vamos usar o mesmo valor de local_id por consistência inicial.
@@ -84,8 +92,8 @@ export const ClienteModel = {
             `INSERT INTO clientes (
         local_id, uuid, server_id, version, razao_social, nome_fantasia, cnpj, cpf,
         tipo_pessoa, contato, email, status, logradouro, numero, complemento,
-        bairro, cidade, estado, cep, sync_status, updated_at, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        bairro, cidade, estado, cep, sync_status, updated_at, created_at, empresa_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
                 localId,
                 uuid,
@@ -108,7 +116,8 @@ export const ClienteModel = {
                 data.cep || null,
                 syncStatus,
                 now,
-                now
+                now,
+                data.empresaId || 0
             ]
         );
 
@@ -205,7 +214,7 @@ export const ClienteModel = {
           tipo_pessoa = ?, contato = ?, email = ?, status = ?,
           logradouro = ?, numero = ?, complemento = ?, bairro = ?,
           cidade = ?, estado = ?, cep = ?,
-          sync_status = 'SYNCED', last_synced_at = ?, updated_at = ?
+          sync_status = 'SYNCED', last_synced_at = ?, updated_at = ?, empresa_id = ?
          WHERE id = ?`,
                 [
                     cliente.id,
@@ -226,6 +235,7 @@ export const ClienteModel = {
                     cep,
                     now,
                     now,
+                    cliente.empresaId || existing.empresa_id || 0,
                     existing.id
                 ]
             );
@@ -239,8 +249,8 @@ export const ClienteModel = {
                 `INSERT INTO clientes (
           local_id, uuid, server_id, version, razao_social, nome_fantasia, cnpj, cpf,
           tipo_pessoa, contato, email, status, logradouro, numero, complemento,
-          bairro, cidade, estado, cep, sync_status, last_synced_at, updated_at, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          bairro, cidade, estado, cep, sync_status, last_synced_at, updated_at, created_at, empresa_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                 [
                     localId,
                     uuid,
@@ -264,7 +274,8 @@ export const ClienteModel = {
                     'SYNCED', // sync_status
                     now,
                     now,
-                    now
+                    now,
+                    cliente.empresaId || 0
                 ]
             );
             return (await this.getById(id))!;

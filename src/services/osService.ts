@@ -84,6 +84,16 @@ export const osService = {
     createOS: async (data: CreateOSRequest): Promise<OrdemServico> => {
         Logger.info('[OSService] Creating OS', { clienteId: data.clienteId, data: data.data });
 
+        // 🛡️ Secure Context
+        const { authService } = require('./authService');
+        const session = await authService.getSessionClaims();
+
+        if (!session?.empresaId) {
+            throw new Error('Empresa ID não encontrado na sessão. Faça login novamente.');
+        }
+
+        const empresaId = session.empresaId;
+
         // 🔧 DEBUG: Verificar conectividade (respeita modo forceOffline)
         const { isConnected, isInternetReachable } = await OfflineDebug.checkConnectivity();
         const isOnline = isConnected && isInternetReachable;
@@ -94,7 +104,7 @@ export const osService = {
             // Tentar criar na API primeiro
             try {
                 Logger.info('[OSService] Attempting API create (online mode)');
-                const response = await api.post<OrdemServico>('/ordens-servico', data);
+                const response = await api.post<OrdemServico>('/ordens-servico', { ...data, empresaId });
 
                 // Salvar no cache local como SYNCED
                 await OSModel.upsertFromServer(response.data);
@@ -109,7 +119,7 @@ export const osService = {
 
         // Modo offline: salvar localmente e adicionar à fila
         Logger.info('[OSService] Creating OS in offline mode');
-        const localOS = await OSModel.create(data, 'PENDING_CREATE');
+        const localOS = await OSModel.create({ ...data, empresaId }, 'PENDING_CREATE');
 
         Logger.info('[OSService] OS created locally', {
             localId: localOS.local_id,
@@ -131,15 +141,54 @@ export const osService = {
             valorTotalComDesconto: localOS.valor_total || 0,
             dataVencimento: localOS.data_vencimento || undefined,
             atrasado: false,
-            usuarioId: 0,
+            usuarioId: session.userId || 0,
             usuarioNome: undefined,
             usuarioEmail: '',
-            empresaId: 1 // Default or from context
+            empresaId: empresaId
         };
     },
 
     // --- In-flight Promise ---
     _listOSPromise: null as Promise<OrdemServico[]> | null,
+
+    listOS: async (since?: string): Promise<OrdemServico[]> => {
+        const { isConnected, isInternetReachable } = await OfflineDebug.checkConnectivity();
+        const isOnline = isConnected && isInternetReachable && !OfflineDebug.isForceOffline();
+
+        // 🛡️ Data Isolation: Get current user context
+        const { authService } = require('./authService');
+        const session = await authService.getSessionClaims();
+        const userId = session?.userId;
+        let role = undefined;
+
+        if (userId) {
+            try {
+                const { UserModel } = require('./database/models/UserModel');
+                const user = await UserModel.getById(userId);
+                if (user) {
+                    role = user.role;
+                }
+            } catch (e) {
+                Logger.warn('[OSService] Failed to fetch user role for isolation', e);
+            }
+        }
+
+        Logger.info(`[OSService] listOS called (User: ${userId}, Role: ${role})`);
+
+        // 1. Fetch from Local DB (Always Single Source of Truth for UI)
+        if (!session?.empresaId) {
+            Logger.warn('[OSService] listOS called without empresaId, returning empty list');
+            return [];
+        }
+
+        const localOS = await OSModel.getAllFull({
+            empresaId: session.empresaId,
+            userId: userId,
+            includeAllUsers: role === 'ADMIN'
+        });
+
+        return localOS;
+    },
 
     /**
      * Fetches OS data from API without persisting.
@@ -166,9 +215,17 @@ export const osService = {
     getOSById: async (id: number | string): Promise<OrdemServico> => {
         Logger.info('[OSService] getOSById', { id });
 
+        // 🛡️ Data Isolation
+        const { authService } = require('./authService');
+        const session = await authService.getSessionClaims();
+
+        if (!session?.empresaId) {
+            throw new Error('Sessão inválida ou expirada (empresaId missing).');
+        }
+
         try {
             // 1. Tentar local primeiro (JOIN Otimizado) - Suporta ID numérico ou UUID
-            const localFull = await OSModel.getByIdFull(id);
+            const localFull = await OSModel.getByIdFull(id, session.empresaId);
 
             if (localFull) {
                 Logger.info('[OSService] Found full OS locally (JOIN)');

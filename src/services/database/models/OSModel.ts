@@ -29,6 +29,14 @@ export const OSModel = {
         return result?.count || 0;
     },
 
+    async getCountByEmpresa(empresaId: number): Promise<number> {
+        const result = await databaseService.getFirst<{ count: number }>(
+            `SELECT COUNT(*) as count FROM ordens_servico WHERE empresa_id = ?`,
+            [empresaId]
+        );
+        return result?.count || 0;
+    },
+
     /**
      * Buscar todas as OS completas (JOIN) para evitar N+1 queries
      */
@@ -36,16 +44,15 @@ export const OSModel = {
      * Buscar todas as OS completas (JOIN) para evitar N+1 queries
      * Suporta filtro por usuário (Data Isolation)
      */
-    async getAllFull(userId?: number, role?: string): Promise<OrdemServico[]> {
-        let whereClause = "WHERE os.sync_status != 'PENDING_DELETE'";
-        const params: any[] = [];
+    async getAllFull(params: { empresaId: number; userId?: number; includeAllUsers?: boolean }): Promise<OrdemServico[]> {
+        let whereClause = "WHERE os.empresa_id = ? AND os.sync_status != 'PENDING_DELETE'";
+        const sqlParams: any[] = [params.empresaId];
 
         // 🛡️ Data Isolation:
-        // Se role NÂO for ADMIN e userId for válido, filtrar por usuário.
-        // Regra adicional: Se role NÂO for Admin, não ver OS sem usuario_id (unassigned).
-        if (role !== 'ADMIN' && userId) {
+        // Se includeAllUsers for false (default para técnicos), filtrar por usuário.
+        if (!params.includeAllUsers && params.userId) {
             whereClause += " AND (os.usuario_id = ?)";
-            params.push(userId);
+            sqlParams.push(params.userId);
         }
 
         const query = `
@@ -53,7 +60,7 @@ export const OSModel = {
                 os.id as os_id, os.local_id as os_local_id, os.server_id as os_server_id, os.data as os_data, 
                 os.status as os_status, os.valor_total as os_valor_total, os.tipo_desconto as os_tipo_desconto, 
                 os.valor_desconto as os_valor_desconto, os.cliente_id as os_cliente_id, os.cliente_local_id as os_cliente_local_id,
-                os.usuario_id, os.usuario_nome, os.usuario_email, os.sync_status as os_sync_status,
+                os.usuario_id, os.usuario_nome, os.usuario_email, os.sync_status as os_sync_status, os.empresa_id as os_empresa_id,
                 c.id as c_id, c.local_id as c_local_id, c.server_id as c_server_id, c.razao_social as c_razao_social, 
                 c.nome_fantasia as c_nome_fantasia, c.cpf as c_cpf, c.cnpj as c_cnpj, c.tipo_pessoa as c_tipo_pessoa,
                 c.contato as c_contato, c.email as c_email, c.status as c_status,
@@ -71,7 +78,7 @@ export const OSModel = {
             ORDER BY os.data DESC, os.id DESC
         `;
 
-        const rows = await databaseService.runQuery<any>(query, params);
+        const rows = await databaseService.runQuery<any>(query, sqlParams);
 
         const osMap = new Map<string, OrdemServico>();
 
@@ -113,7 +120,7 @@ export const OSModel = {
                     usuarioNome: row.usuario_nome || undefined,
                     usuarioEmail: row.usuario_email || undefined,
                     syncStatus: row.os_sync_status as any,
-                    empresaId: 1,
+                    empresaId: row.os_empresa_id,
                     atrasado: false
                 } as any;
                 os = newOS;
@@ -163,13 +170,13 @@ export const OSModel = {
     /**
      * Buscar OS completa por ID ou LocalID (JOIN)
      */
-    async getByIdFull(id: number | string): Promise<OrdemServico | null> {
+    async getByIdFull(id: number | string, empresaId: number): Promise<OrdemServico | null> {
         const query = `
             SELECT 
                 os.id as os_id, os.local_id as os_local_id, os.server_id as os_server_id, os.data as os_data, 
                 os.status as os_status, os.valor_total as os_valor_total, os.tipo_desconto as os_tipo_desconto, 
                 os.valor_desconto as os_valor_desconto, os.cliente_id as os_cliente_id, os.cliente_local_id as os_cliente_local_id,
-                os.usuario_id, os.usuario_nome, os.usuario_email, os.sync_status as os_sync_status,
+                os.usuario_id, os.usuario_nome, os.usuario_email, os.sync_status as os_sync_status, os.empresa_id as os_empresa_id,
                 c.id as c_id, c.local_id as c_local_id, c.server_id as c_server_id, c.razao_social as c_razao_social, 
                 c.nome_fantasia as c_nome_fantasia, c.cpf as c_cpf, c.cnpj as c_cnpj, c.tipo_pessoa as c_tipo_pessoa,
                 c.contato as c_contato, c.email as c_email, c.status as c_status,
@@ -183,10 +190,10 @@ export const OSModel = {
             LEFT JOIN clientes c ON (os.cliente_id = c.id OR os.cliente_local_id = c.local_id)
             LEFT JOIN veiculos_os v ON (os.id = v.os_id OR os.local_id = v.os_local_id)
             LEFT JOIN pecas_os p ON (v.id = p.veiculo_id OR v.local_id = p.veiculo_local_id)
-            WHERE os.id = ? OR os.local_id = ?
+            WHERE (os.id = ? OR os.local_id = ?) AND os.empresa_id = ?
         `;
 
-        const rows = await databaseService.runQuery<any>(query, [id, id]);
+        const rows = await databaseService.runQuery<any>(query, [id, id, empresaId]);
 
         if (rows.length === 0) return null;
 
@@ -194,6 +201,13 @@ export const OSModel = {
 
         for (const row of rows) {
             if (!os) {
+                if (!row.os_empresa_id) {
+                    console.error('[OSModel.getByIdFull] Critical: OS sem empresa_id', { osId: row.os_id, osLocalId: row.os_local_id });
+                    // Return null to avoid crashing UI but prevent usage of corrupt data, or throw.
+                    // Throwing is safer for debugging "why is my screen white/error".
+                    throw new Error(`OS data corruption: Missing empresa_id for OS ${row.os_id || row.os_local_id}`);
+                }
+
                 os = {
                     id: row.os_server_id || row.os_id,
                     localId: row.os_local_id,
@@ -227,7 +241,7 @@ export const OSModel = {
                     usuarioNome: row.usuario_nome || undefined,
                     usuarioEmail: row.usuario_email || undefined,
                     syncStatus: row.os_sync_status as any,
-                    empresaId: 1,
+                    empresaId: Number(row.os_empresa_id),
                     atrasado: false
                 } as any;
             }
@@ -314,11 +328,15 @@ export const OSModel = {
         const veiculos = await VeiculoModel.getByOSId(local.id);
         console.log(`[OSModel] toApiFormat: OS Local PK ${local.id} (UUID: ${local.local_id}) has ${veiculos.length} veiculos`);
 
+        if (!local.empresa_id) {
+            throw new Error(`[OSModel.toApiFormat] OS sem empresa_id (local_id=${local.local_id}, id=${local.id})`);
+        }
+
         return {
             id: local.server_id || local.id, // Preferência server_id se synced, senão ID local
             localId: local.local_id, // Importante para referência futura
             cliente: cliente, // <--- ADICIONADO
-            empresaId: 1, // Default or fetch from auth/config
+            empresaId: local.empresa_id,
             data: local.data,
             dataVencimento: local.data_vencimento || undefined,
             status: local.status as OSStatus,
@@ -380,7 +398,7 @@ export const OSModel = {
     /**
      * Criar OS local (para uso offline)
      */
-    async create(data: CreateOSRequest & { clienteLocalId?: string; usuarioId?: number }, syncStatus: SyncStatus = 'PENDING_CREATE'): Promise<LocalOS> {
+    async create(data: CreateOSRequest & { clienteLocalId?: string; usuarioId?: number; empresaId?: number }, syncStatus: SyncStatus = 'PENDING_CREATE'): Promise<LocalOS> {
         const now = Date.now();
         const localId = uuidv4();
 
@@ -419,13 +437,18 @@ export const OSModel = {
 
         const uuid = localId; // Usando localId como UUID
 
+        // Validação obrigatória de empresaId
+        if (!data.empresaId) {
+            throw new Error('[OSModel.create] empresaId obrigatório');
+        }
+
         const id = await databaseService.runInsert(
             `INSERT INTO ordens_servico (
         local_id, uuid, server_id, version, cliente_id, cliente_local_id,
         data, data_vencimento, status, valor_total,
         sync_status, updated_at, created_at,
-        usuario_id, usuario_nome, usuario_email
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        usuario_id, usuario_nome, usuario_email, empresa_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
                 localId,
                 uuid,
@@ -438,11 +461,12 @@ export const OSModel = {
                 'ABERTA',
                 0, // valor_total inicial
                 syncStatus,
-                now,
-                now,
-                usuarioId,
-                usuarioNome,
-                usuarioEmail
+                now, // updated_at
+                now, // created_at (FIX: was usuarioId)
+                usuarioId, // usuario_id (FIX: was usuarioNome)
+                usuarioNome, // usuario_nome (FIX: was usuarioEmail)
+                usuarioEmail, // usuario_email (FIX: was usuarioNome)
+                data.empresaId // empresa_id (FIX: was usuarioEmail, and removed || 0 per request)
             ]
         );
 
@@ -569,13 +593,16 @@ export const OSModel = {
                 }
             }
 
+            const empresaIdSafe = os.empresaId ?? existing.empresa_id;
+            if (!empresaIdSafe) throw new Error(`[OSModel.upsertFromServer] empresaId ausente (os.id=${os.id})`);
+
             await databaseService.runUpdate(
                 `UPDATE ordens_servico SET
           server_id = ?,
           cliente_id = ?, cliente_local_id = ?, data = ?, data_vencimento = ?,
           status = ?, valor_total = ?, tipo_desconto = ?, valor_desconto = ?,
           sync_status = 'SYNCED', last_synced_at = ?, updated_at = ?,
-          usuario_id = ?, usuario_nome = ?, usuario_email = ?
+          usuario_id = ?, usuario_nome = ?, usuario_email = ?, empresa_id = ?
          WHERE id = ?`,
                 [
                     os.id,
@@ -589,9 +616,10 @@ export const OSModel = {
                     os.valorDesconto || null,
                     now,
                     now,
-                    os.usuarioId || existing.usuario_id || (usuarioEmail ? 0 : null),
-                    usuarioNome || existing.usuario_nome || null,
-                    usuarioEmail || existing.usuario_email || null,
+                    os.usuarioId ?? existing.usuario_id ?? null,
+                    usuarioNome ?? existing.usuario_nome ?? null,
+                    usuarioEmail ?? existing.usuario_email ?? null,
+                    empresaIdSafe,
                     existing.id
                 ]
             );
@@ -601,13 +629,21 @@ export const OSModel = {
             const localId = os.localId || uuidv4();
             const uuid = localId;
 
+            // Validação obrigatória de empresaId
+            if (!os.empresaId) {
+                // Se empresaId é 0, pode ser válido em alguns casos legados, mas o ideal é ter valor.
+                // O usuário pediu "sem || 0 (idealmente obrigatório)".
+                // Se vier 0 da API, ok. Se vier null/undefined, erro.
+                throw new Error(`[OSModel.upsertFromServer] empresaId ausente (os.id=${os.id})`);
+            }
+
             const id = await databaseService.runInsert(
                 `INSERT INTO ordens_servico (
           local_id, uuid, server_id, version, cliente_id, cliente_local_id,
           data, data_vencimento, status, valor_total, tipo_desconto, valor_desconto,
           sync_status, last_synced_at, updated_at, created_at,
-          usuario_id, usuario_nome, usuario_email
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          usuario_id, usuario_nome, usuario_email, empresa_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                 [
                     localId,
                     uuid,
@@ -627,7 +663,8 @@ export const OSModel = {
                     now,
                     os.usuarioId || (os.usuarioEmail ? 0 : null),
                     os.usuarioNome || null,
-                    os.usuarioEmail || null
+                    os.usuarioEmail || null,
+                    os.empresaId // empresa_id (FIXED: removed extra params and || 0 logic)
                 ]
             );
             console.log(`[OSModel] ✅ Inserted New OS: Local ID ${localId} / Server ID ${os.id}`);

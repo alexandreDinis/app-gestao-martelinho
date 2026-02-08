@@ -40,6 +40,21 @@ class DatabaseService {
                 await this.safeAddColumn('users', 'name', 'TEXT');
                 await this.safeAddColumn('users', 'email', 'TEXT');
                 await this.safeAddColumn('users', 'role', 'TEXT');
+                // PR 2: Multi-tenancy support - Users
+                await this.safeAddColumn('users', 'empresa_id', 'INTEGER');
+
+                // PR 2: Multi-tenancy support - OS & Clientes (Data Isolation)
+                await this.safeAddColumn('ordens_servico', 'empresa_id', 'INTEGER');
+                await this.safeAddColumn('clientes', 'empresa_id', 'INTEGER');
+
+                // Index creation
+                try {
+                    await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_users_empresa_id ON users (empresa_id);');
+                    await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_os_empresa_id ON ordens_servico (empresa_id);');
+                    await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_clientes_empresa_id ON clientes (empresa_id);');
+                } catch (e) {
+                    console.warn('[DatabaseService] Failed to create indices', e);
+                }
 
                 // Sync Queue Columns (Robust Backoff Support - V7 Safety)
                 await this.safeAddColumn('sync_queue', 'attempts', 'INTEGER DEFAULT 0');

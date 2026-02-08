@@ -46,6 +46,7 @@ export interface LocalCliente extends BaseLocalEntity {
     cidade: string | null;
     estado: string | null;
     cep: string | null;
+    empresa_id?: number;
 }
 
 export interface LocalOS extends BaseLocalEntity {
@@ -61,6 +62,7 @@ export interface LocalOS extends BaseLocalEntity {
     usuario_id?: number | null;
     usuario_nome?: string | null;
     usuario_email?: string | null;
+    empresa_id?: number;
 }
 
 export interface LocalVeiculo extends BaseLocalEntity {

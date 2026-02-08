@@ -73,6 +73,7 @@ export interface Cliente {
     cidade?: string;
     estado?: string;
     cep?: string;
+    empresaId?: number;
 }
 
 export interface ClienteRequest {

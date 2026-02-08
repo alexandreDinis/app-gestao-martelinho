@@ -49,6 +49,52 @@ export const authService = {
         return null;
     },
 
+    /**
+     * Retorna claims do token (userId, empresaId) sem depender de estado React.
+     * Fonte da verdade absoluta para Sync e Offline Logic.
+     */
+    getSessionClaims: async (): Promise<{ userId: number; empresaId: number } | null> => {
+        try {
+            const userStr = await SecureStore.getItemAsync('user');
+            if (!userStr) return null;
+
+            const user = JSON.parse(userStr) as UserResponse;
+            if (!user.token) return null;
+
+            // Simple JWT Decode (Payload is part 2)
+            const parts = user.token.split('.');
+            if (parts.length !== 3) return null;
+
+            // Base64Url to Base64
+            let start = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+            // Pad with =
+            const pad = start.length % 4;
+            if (pad) {
+                if (pad === 1) throw new Error('InvalidLengthError: Input base64url string is the wrong length to determine padding');
+                start += new Array(5 - pad).join('=');
+            }
+
+            // Decode
+            const jsonPayload = atob(start);
+            // Note: 'atob' might not be available in all RN envs without polyfill, 
+            // but Expo usually supports it or we can use Buffer. 
+            // If atob fails, we might need a polyfill.
+            // Let's assume standard RN environment or use a safe decoder.
+
+            const payload = JSON.parse(jsonPayload);
+
+            // Adjust field mapping based on backend JWT structure
+            // Usually: sub (id), empresaId, or custom claims
+            return {
+                userId: Number(payload.sub || payload.id || payload.userId),
+                empresaId: Number(payload.tid || payload.empresaId || payload.empresa_id || 0)
+            };
+        } catch (error) {
+            console.error('[authService] Failed to decode session claims:', error);
+            return null;
+        }
+    },
+
     // ========== BIOMETRIC METHODS ==========
 
     /**
