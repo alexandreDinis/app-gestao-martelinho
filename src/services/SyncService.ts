@@ -10,41 +10,61 @@ import api from './api';
 
 export const SyncService = {
     // --- MUTEX STATE ---
-    _syncPromise: null as Promise<void> | null,
-    _syncPending: false,
+    _syncLock: false,
+    _syncAllPromise: null as Promise<void> | null,
+    _processQueuePromise: null as Promise<void> | null,
 
     /**
-     * Executes a task exclusively (Mutex Coalesce Pattern).
+     * Executes a task exclusively (Mutex Pattern for Writes).
+     * Only one write operation can run at a time.
      */
-    async runExclusive(task: () => Promise<void>): Promise<void> {
-        if (this._syncPromise) {
-            console.log('⏳ Sync already in progress, marking partial as pending next run.');
-            this._syncPending = true;
-            return this._syncPromise;
+    async runExclusive<T>(task: () => Promise<T>): Promise<T> {
+        const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+        // Spin-wait mechanism (simple mutex)
+        let attempts = 0;
+        while (this._syncLock && attempts < 50) { // Max 10s wait
+            await wait(200);
+            attempts++;
         }
 
-        this._syncPromise = (async () => {
-            do {
-                this._syncPending = false;
-                try {
-                    await task();
-                } catch (e) {
-                    console.error('❌ Error executing exclusive sync task:', e);
-                }
-            } while (this._syncPending);
-        })().finally(() => {
-            this._syncPromise = null;
-        });
+        if (this._syncLock) {
+            console.warn('⚠️ Sync Mutex Timeout - operation aborted to preserve integrity.');
+            throw new Error('SYNC_MUTEX_TIMEOUT');
+        }
 
-        return this._syncPromise;
+        this._syncLock = true;
+        try {
+            return await task();
+        } finally {
+            this._syncLock = false;
+        }
     },
 
     /**
-     * Sincroniza tudo (SERIALIZED)
+     * Sincroniza tudo (SERIALIZED & COALESCED)
      */
     async syncAll(isConnected: boolean, caller = 'unknown'): Promise<void> {
         if (!isConnected) return;
-        return this.runExclusive(() => this._syncAllNoLock(isConnected, caller));
+
+        // In-flight coalescing: Return existing promise if already running
+        if (this._syncAllPromise) {
+            console.log(`⏳ SyncAll already in progress [Caller: ${caller}], returning in-flight promise.`);
+            return this._syncAllPromise;
+        }
+
+        this._syncAllPromise = (async () => {
+            try {
+                // Use Mutex for the write-heavy part
+                await this.runExclusive(() => this._syncAllNoLock(isConnected, caller));
+            } catch (e) {
+                console.error(`❌ SyncAll failed [Caller: ${caller}]:`, e);
+            } finally {
+                this._syncAllPromise = null;
+            }
+        })();
+
+        return this._syncAllPromise;
     },
 
     async _syncAllNoLock(isConnected: boolean, caller: string): Promise<void> {
@@ -88,8 +108,12 @@ export const SyncService = {
             }
 
             console.log('✅ Sincronização Completa Finalizada!');
+            // Only set global marker if successful.
+            // TODO: In PR 2, this will be per-tenant/env.
+            await SecureStore.setItemAsync('last_full_sync_at', new Date().toISOString());
         } catch (error) {
             console.error('❌ Erro na sincronização:', error);
+            throw error; // Propagate to let caller know it failed
         }
     },
 
@@ -100,38 +124,47 @@ export const SyncService = {
             await this.syncTiposPeca();
         } catch (error) {
             console.error('❌ Erro ao baixar metadados:', error);
+            throw error;
         }
     },
 
     // --- In-flight Promises & Throttling ---
-    _checkForUpdatesPromise: null as Promise<{ hasServerUpdates: boolean; serverTime: string | null }> | null,
+    _checkForUpdatesPromise: null as Promise<{ status: 'BOOTSTRAP_REQUIRED' | 'UPDATES_AVAILABLE' | 'UP_TO_DATE'; serverTime: string | null }> | null,
     _lastCheckForUpdates: 0,
 
     /**
      * Verifica se há atualizações no servidor (Lightweight Check)
      */
-    async checkForUpdates(force = false, caller = 'unknown'): Promise<{ hasServerUpdates: boolean; serverTime: string | null }> {
+    async checkForUpdates(force = false, caller = 'unknown'): Promise<{ status: 'BOOTSTRAP_REQUIRED' | 'UPDATES_AVAILABLE' | 'UP_TO_DATE'; serverTime: string | null }> {
         if (this._checkForUpdatesPromise) {
             console.log(`[SyncService] checkForUpdates [Caller: ${caller}] - returning in-flight promise`);
             return this._checkForUpdatesPromise;
         }
 
         const now = Date.now();
-        const THROTTLE_MS = 10 * 60 * 1000;
+        const THROTTLE_MS = 30 * 1000; // 30 seconds throttle
         if (!force && this._lastCheckForUpdates > 0 && (now - this._lastCheckForUpdates < THROTTLE_MS)) {
             console.log(`[SyncService] Check throttled [Caller: ${caller}]. Last check: ${((now - this._lastCheckForUpdates) / 1000).toFixed(0)}s ago.`);
-            return { hasServerUpdates: false, serverTime: null };
+            return { status: 'UP_TO_DATE', serverTime: null };
         }
 
         console.log(`[SyncService] Checking for updates [Caller: ${caller}]...`);
 
         this._checkForUpdatesPromise = (async () => {
             try {
-                // 🛡️ SANITY CHECK: Se o banco estiver vazio, força update
+                // 🛡️ SANITY CHECK: Se bando local vazio = BOOTSTRAP_REQUIRED.
+                // Independentemente de se existe marker ou não (pode ser marker de outro tenant/env ou corrompido).
                 const localCount = await OSModel.getCount();
+
                 if (localCount === 0) {
-                    console.log(`[SyncService] ⚠️ Local DB is empty (OS=0). Forcing 'Updates Available'.`);
-                    return { hasServerUpdates: true, serverTime: null };
+                    console.log(`[SyncService] ⚠️ Local OS count is 0. Forcing BOOTSTRAP_REQUIRED.`);
+                    return { status: 'BOOTSTRAP_REQUIRED', serverTime: null };
+                }
+
+                const lastFullSync = await SecureStore.getItemAsync('last_full_sync_at');
+                if (!lastFullSync) {
+                    console.log(`[SyncService] ⚠️ Missing full sync marker. BOOTSTRAP REQUIRED.`);
+                    return { status: 'BOOTSTRAP_REQUIRED', serverTime: null };
                 }
 
                 const response = await api.get('/sync/status');
@@ -143,21 +176,25 @@ export const SyncService = {
 
                 let hasUpdates = false;
 
-                if (status.clientesUpdatedAtMax) {
-                    if (!lastSyncClientes) hasUpdates = true;
-                    else if (new Date(status.clientesUpdatedAtMax).getTime() > new Date(lastSyncClientes).getTime()) hasUpdates = true;
-                }
+                // Handle null timestamps from server (e.g., empty backend DB)
+                // Treat null server timestamp as epoch 0 (no data)
+                const serverClientesMax = status.clientesUpdatedAtMax ? new Date(status.clientesUpdatedAtMax).getTime() : 0;
+                const localClientesMax = lastSyncClientes ? new Date(lastSyncClientes).getTime() : 0;
 
-                if (status.osUpdatedAtMax) {
-                    if (!lastSyncOS) hasUpdates = true;
-                    else if (new Date(status.osUpdatedAtMax).getTime() > new Date(lastSyncOS).getTime()) hasUpdates = true;
-                }
+                const serverOSMax = status.osUpdatedAtMax ? new Date(status.osUpdatedAtMax).getTime() : 0;
+                const localOSMax = lastSyncOS ? new Date(lastSyncOS).getTime() : 0;
 
-                console.log(`[SyncService] Updates Available: ${hasUpdates}`);
-                return { hasServerUpdates: hasUpdates, serverTime: status.serverTime || null };
+                if (serverClientesMax > localClientesMax) hasUpdates = true;
+                if (serverOSMax > localOSMax) hasUpdates = true;
+
+                console.log(`[SyncService] Updates: ${hasUpdates} (C: ${serverClientesMax > localClientesMax}, OS: ${serverOSMax > localOSMax})`);
+
+                const resultStatus: 'BOOTSTRAP_REQUIRED' | 'UPDATES_AVAILABLE' | 'UP_TO_DATE' = hasUpdates ? 'UPDATES_AVAILABLE' : 'UP_TO_DATE';
+
+                return { status: resultStatus, serverTime: status.serverTime || null };
             } catch (error) {
-                console.error('❌ Falha ao verificar atualizações:', error);
-                return { hasServerUpdates: false, serverTime: null };
+                console.error('[SyncService] Check for updates failed:', error);
+                return { status: 'UP_TO_DATE', serverTime: null };
             } finally {
                 this._checkForUpdatesPromise = null;
             }
@@ -175,8 +212,8 @@ export const SyncService = {
         const lastFullSync = await SecureStore.getItemAsync('last_full_sync_at');
         const localCount = await OSModel.getCount();
 
-        if (!lastFullSync || localCount === 0) {
-            console.log(`🚀 BOOTSTRAP: Start full sync... (LastSync: ${!!lastFullSync}, Count: ${localCount})`);
+        if (!lastFullSync) {
+            console.log(`🚀 BOOTSTRAP: Start full sync... (Missing Marker)`);
             await this.syncAll(true, 'SyncEngine.bootstrap');
             await SecureStore.setItemAsync('last_full_sync_at', new Date().toISOString());
         } else {
@@ -211,7 +248,15 @@ export const SyncService = {
         const syncStart = new Date().toISOString();
 
         try {
-            const response = await api.get('/clientes', { params: { since: lastSync } });
+            // 🛡️ Safety: If local DB is empty, IGNORE last_sync and force full pull
+            const localCount = await ClienteModel.getCount();
+            const effectiveSince = localCount === 0 ? undefined : lastSync;
+
+            if (localCount === 0 && lastSync) {
+                console.log('⚠️ Local Client DB is empty. Forcing full pull (ignoring last_sync).');
+            }
+
+            const response = await api.get('/clientes', { params: { since: effectiveSince } });
             const rawData = response.data;
             const data = Array.isArray(rawData) ? rawData : (rawData?.content || rawData?.data || rawData?.items || []);
 
@@ -227,11 +272,24 @@ export const SyncService = {
     },
 
     async processQueue(): Promise<void> {
-        return this.runExclusive(() => this._processQueueNoLock());
+        if (this._processQueuePromise) {
+            console.log('📤 ProcessQueue already in progress, returning in-flight promise.');
+            return this._processQueuePromise;
+        }
+
+        this._processQueuePromise = (async () => {
+            try {
+                await this.runExclusive(() => this._processQueueNoLock());
+            } finally {
+                this._processQueuePromise = null;
+            }
+        })();
+
+        return this._processQueuePromise;
     },
 
     async _processQueueNoLock(): Promise<void> {
-        console.log('📤 Processando fila de sincronização (Robust Sync V2)...');
+        console.log('📤 Processando fila de sincronização (Robust Sync V3 - Phased)...');
 
         // 1. Fetch All Pending Items
         const pendingItems = await SyncQueueModel.getAllPending();
@@ -242,7 +300,7 @@ export const SyncService = {
 
         console.log(`📋 Itens pendentes: ${pendingItems.length}`);
 
-        // 2. Sort by Priority (Phase-Based)
+        // 2. Sort by Priority (Phase-Based) for execution order
         // Order: CLIENTE (0) > OS (1) > VEICULO (2) > PECA (3) > DESPESA (4)
         const PRIORITY_MAP: Record<string, number> = {
             'cliente': 0,
@@ -266,7 +324,7 @@ export const SyncService = {
                 const backoffMs = this.calculateBackoff(item.attempts);
                 const nextRetry = item.last_attempt + backoffMs;
                 if (Date.now() < nextRetry) {
-                    console.log(`⏳ Skipping item ${item.id} (Backoff). Retry in ${((nextRetry - Date.now()) / 1000).toFixed(0)}s`);
+                    console.log(`⏳ Skipping item ${item.entity_type} ${item.id} (Backoff). Retry in ${((nextRetry - Date.now()) / 1000).toFixed(0)}s`);
                     continue;
                 }
             }
@@ -275,15 +333,15 @@ export const SyncService = {
                 const payload = item.payload ? JSON.parse(item.payload) : null;
 
                 // 3.2 Check Dependencies (Parent Existence)
+                // New Rule: Wait until parent syncs successfully in this or previous cycle
                 const isReady = await this.checkDependencies(item, payload);
                 if (!isReady) {
-                    // Dep not ready? Skip silently (wait for next sync cycle where parent might be synced)
-                    console.log(`⏸️ Skipping item ${item.id} (Dependency not ready)`);
+                    console.log(`⏸️ Skipping item ${item.entity_type} ${item.id} (Dependency not ready)`);
                     continue;
                 }
 
                 let serverId: number | null = null;
-                console.log(`🔄 Processing ${item.entity_type} ${item.operation} (ID: ${item.id})...`);
+                console.log(`🔄 Processing ${item.entity_type} ${item.operation} (ID: ${item.id}, LocalID: ${item.entity_local_id})...`);
 
                 // 3.3 Execute
                 if (item.entity_type === 'cliente') {
@@ -304,7 +362,7 @@ export const SyncService = {
                     await this.updateLocalEntityId(item.entity_type, item.entity_local_id, serverId);
                     await SyncQueueModel.markAsProcessed(item.id);
                 } else {
-                    // Start DELETE operations or others that don't return ID
+                    // For operations that don't return ID (DELETE) or already mapped
                     await SyncQueueModel.markAsProcessed(item.id);
                 }
 
@@ -312,12 +370,15 @@ export const SyncService = {
                 console.error(`❌ Erro item ${item.id}:`, error.message);
                 const errorType = this.detectErrorType(error);
                 await SyncQueueModel.markAttempt(item.id, false, `${errorType}: ${error.message}`);
+
+                // If critical dependency error (422), maybe invalidate parent? 
+                // For now, backoff handles it.
             }
         }
     },
 
     calculateBackoff(attempts: number): number {
-        // 1: 2s, 2: 10s, 3: 60s, 4+: 10min
+        // Exponential Backoff: 2s -> 10s -> 60s -> 10min
         if (attempts <= 1) return 2000;
         if (attempts === 2) return 10000;
         if (attempts === 3) return 60000;
@@ -325,26 +386,41 @@ export const SyncService = {
     },
 
     async checkDependencies(item: any, payload: any): Promise<boolean> {
-        // Rule: Child cannot be sent if Parent has no server_id
+        // PHASED QUEUE: Strict Dependency Check
+        // If parent ID is missing AND parent localId is pending -> Not Ready.
+
         if (item.entity_type === 'veiculo' && item.operation === 'CREATE') {
             // Check OS
-            // Payload might have osLocalId.
-            // If payload.ordemServicoId is set, it's fine.
-            // If not, we need to check if we can resolve it.
-            if (!payload.ordemServicoId && payload.osLocalId) {
-                const os = await OSModel.getByLocalId(payload.osLocalId);
-                if (!os || !os.server_id) {
-                    console.log(`   -> Missing Parent OS ServerID for Veiculo ${item.entity_local_id}`);
+            if (!payload.ordemServicoId) {
+                if (payload.osLocalId) {
+                    // Check if OS is synced
+                    const os = await OSModel.getByLocalId(payload.osLocalId);
+                    if (!os || !os.server_id) {
+                        // Must verify if OS is in queue ahead of this item? 
+                        // With sorted execution (OS < VEICULO), if OS failed or hasn't run, we must wait.
+                        console.log(`   -> Missing Parent OS ServerID for Veiculo ${item.entity_local_id} (OS Local: ${payload.osLocalId})`);
+                        return false;
+                    }
+                    // Inject server_id if not present in payload (JIC)
+                    payload.ordemServicoId = os.server_id;
+                } else {
+                    // No ID and no LocalID? Data error.
                     return false;
                 }
             }
         }
 
         if (item.entity_type === 'peca' && item.operation === 'CREATE') {
-            if (!payload.veiculoId && payload.veiculoLocalId) {
-                const v = await VeiculoModel.getByLocalId(payload.veiculoLocalId);
-                if (!v || !v.server_id) {
-                    console.log(`   -> Missing Parent Veiculo ServerID for Peca ${item.entity_local_id}`);
+            // Check Veiculo
+            if (!payload.veiculoId) {
+                if (payload.veiculoLocalId) {
+                    const v = await VeiculoModel.getByLocalId(payload.veiculoLocalId);
+                    if (!v || !v.server_id) {
+                        console.log(`   -> Missing Parent Veiculo ServerID for Peca ${item.entity_local_id} (Veiculo Local: ${payload.veiculoLocalId})`);
+                        return false;
+                    }
+                    payload.veiculoId = v.server_id;
+                } else {
                     return false;
                 }
             }
@@ -467,7 +543,16 @@ export const SyncService = {
         const syncStart = new Date().toISOString();
         try {
             const { osService } = await import('./osService');
-            const osList = await osService.fetchFromApi(lastSync || undefined);
+
+            // 🛡️ Safety: If local DB is empty, IGNORE last_sync and force full pull
+            const localCount = await OSModel.getCount();
+            const effectiveSince = localCount === 0 ? undefined : (lastSync || undefined);
+
+            if (localCount === 0 && lastSync) {
+                console.log('⚠️ Local OS DB is empty. Forcing full pull (ignoring last_sync).');
+            }
+
+            const osList = await osService.fetchFromApi(effectiveSince);
             if (osList.length > 0) {
                 await OSModel.upsertBatch(osList);
                 console.log(`✅ ${osList.length} ordens de serviço sincronizadas.`);

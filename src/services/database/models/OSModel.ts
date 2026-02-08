@@ -32,7 +32,22 @@ export const OSModel = {
     /**
      * Buscar todas as OS completas (JOIN) para evitar N+1 queries
      */
-    async getAllFull(): Promise<OrdemServico[]> {
+    /**
+     * Buscar todas as OS completas (JOIN) para evitar N+1 queries
+     * Suporta filtro por usuário (Data Isolation)
+     */
+    async getAllFull(userId?: number, role?: string): Promise<OrdemServico[]> {
+        let whereClause = "WHERE os.sync_status != 'PENDING_DELETE'";
+        const params: any[] = [];
+
+        // 🛡️ Data Isolation:
+        // Se role NÂO for ADMIN e userId for válido, filtrar por usuário.
+        // Regra adicional: Se role NÂO for Admin, não ver OS sem usuario_id (unassigned).
+        if (role !== 'ADMIN' && userId) {
+            whereClause += " AND (os.usuario_id = ?)";
+            params.push(userId);
+        }
+
         const query = `
             SELECT 
                 os.id as os_id, os.local_id as os_local_id, os.server_id as os_server_id, os.data as os_data, 
@@ -52,11 +67,11 @@ export const OSModel = {
             LEFT JOIN clientes c ON (os.cliente_id = c.id OR os.cliente_local_id = c.local_id)
             LEFT JOIN veiculos_os v ON (os.id = v.os_id OR os.local_id = v.os_local_id)
             LEFT JOIN pecas_os p ON (v.id = p.veiculo_id OR v.local_id = p.veiculo_local_id)
-            WHERE os.sync_status != 'PENDING_DELETE'
+            ${whereClause}
             ORDER BY os.data DESC, os.id DESC
         `;
 
-        const rows = await databaseService.runQuery<any>(query);
+        const rows = await databaseService.runQuery<any>(query, params);
 
         const osMap = new Map<string, OrdemServico>();
 

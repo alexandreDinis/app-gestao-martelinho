@@ -41,6 +41,10 @@ class DatabaseService {
                 await this.safeAddColumn('users', 'email', 'TEXT');
                 await this.safeAddColumn('users', 'role', 'TEXT');
 
+                // Sync Queue Columns (Robust Backoff Support - V7 Safety)
+                await this.safeAddColumn('sync_queue', 'attempts', 'INTEGER DEFAULT 0');
+                await this.safeAddColumn('sync_queue', 'last_attempt', 'INTEGER');
+
                 this.isInitialized = true;
                 console.log('[DatabaseService] Database initialized successfully');
                 return; // Success, exit function

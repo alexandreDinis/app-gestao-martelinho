@@ -29,42 +29,49 @@ export const DashboardScreen = () => {
 
     // Sync State
     const [pendingCount, setPendingCount] = useState(0);
-    const [hasServerUpdates, setHasServerUpdates] = useState(false);
+    const [syncStatus, setSyncStatus] = useState<'BOOTSTRAP_REQUIRED' | 'UPDATES_AVAILABLE' | 'UP_TO_DATE'>('UP_TO_DATE');
     const [isSyncing, setIsSyncing] = useState(false);
 
     const checkUpdates = async (force = false, caller = 'Dashboard') => {
         try {
             const { SyncService } = await import('../services/SyncService');
-            const [pending, updates] = await Promise.all([
-                SyncService.getLocalPendingCount(),
-                SyncService.checkForUpdates(force, caller)
-            ]);
+            // Get local pending count
+            const pending = await SyncService.getLocalPendingCount();
             setPendingCount(pending);
-            setHasServerUpdates(updates.hasServerUpdates);
+
+            // Check for server updates (returns structured status now)
+            const result = await SyncService.checkForUpdates(force, caller);
+
+            // Map legacy/refactored return types if necessary, but we updated SyncService to return { status, serverTime }
+            // Let's ensure types match. 
+            // SyncService returns: { status: 'BOOTSTRAP_REQUIRED' | ... }
+            if (result && result.status) {
+                setSyncStatus(result.status);
+
+                // Trigger auto-alert for bootstrap if needed
+                if (result.status === 'BOOTSTRAP_REQUIRED' && !isSyncing) {
+                    setAlertConfig({
+                        visible: true,
+                        title: 'PRIMEIRA SINCRONIA',
+                        message: 'É necessário baixar os dados iniciais do servidor para começar.',
+                        type: 'info',
+                        actions: [{
+                            text: 'BAIXAR AGORA',
+                            onPress: () => {
+                                setAlertConfig({ visible: false });
+                                handleSync();
+                            }
+                        }]
+                    });
+                }
+            }
         } catch (error) {
             console.error('Failed to check updates:', error);
         }
     };
 
-    const checkFirstAccess = async () => {
-        try {
-            const { OSModel } = await import('../services/database/models/OSModel');
-            const lastSync = await SecureStore.getItemAsync('last_full_sync_at');
-            const count = await OSModel.getCount();
-
-            if (!lastSync || count === 0) {
-                setAlertConfig({
-                    visible: true,
-                    title: 'INICIALIZAÇÃO DO SISTEMA',
-                    message: 'Detectamos que esta é sua primeira sessão ou o banco de dados foi resetado.\n\n• É necessário realizar a primeira sincronia para baixar seus dados.\n• O sistema monitora o servidor e avisará se houver atualizações.\n• Caso realize alterações offline, lembre-se de sincronizar assim que recuperar a conexão.',
-                    type: 'info',
-                    actions: [{ text: 'ENTENDI', onPress: () => setAlertConfig({ visible: false }) }]
-                });
-            }
-        } catch (e) {
-            console.error('First access check failed', e);
-        }
-    };
+    // Legacy checkFirstAccess removed or merged into checkUpdates logic via SyncService
+    // We keep a simple mount effect for data loading
 
     const handleSync = async () => {
         setIsSyncing(true);
@@ -72,11 +79,14 @@ export const DashboardScreen = () => {
             const { SyncService } = await import('../services/SyncService');
             const netInfo = await (await import('@react-native-community/netinfo')).default.fetch();
 
-            await SyncService.syncAll(!!netInfo.isConnected, 'Dashboard.manual');
+            // If bootstrap required, force TRUE
+            const isBootstrap = syncStatus === 'BOOTSTRAP_REQUIRED';
+
+            await SyncService.syncAll(!!netInfo.isConnected, isBootstrap ? 'Dashboard.bootstrap' : 'Dashboard.manual');
 
             // Re-check after sync
             await checkUpdates(true, 'Dashboard.manual');
-            await fetchData(true, 'Dashboard.manual'); // Refresh local list
+            await fetchData(true, 'Dashboard.manual');
 
             setAlertConfig({
                 visible: true,
@@ -85,11 +95,11 @@ export const DashboardScreen = () => {
                 type: 'success',
                 actions: [{ text: 'OK', onPress: () => setAlertConfig({ visible: false }) }]
             });
-        } catch (error) {
+        } catch (error: any) {
             setAlertConfig({
                 visible: true,
                 title: 'ERRO NA SINCRONIZAÇÃO',
-                message: 'Não foi possível completar a sincronização. Tente novamente.',
+                message: error.message || 'Não foi possível completar a sincronização.',
                 type: 'error',
                 actions: [{ text: 'OK', onPress: () => setAlertConfig({ visible: false }) }]
             });
@@ -100,11 +110,8 @@ export const DashboardScreen = () => {
 
     const fetchData = async (force = false, caller = 'Dashboard') => {
         try {
-            // Read-only local fetch (instant)
             const data = await osService.listOS();
             setOsList(data);
-
-            // Check for updates (throttled by default, forced on refresh)
             checkUpdates(force, caller);
         } catch (error) {
             console.error('Failed to load OS:', error);
@@ -115,17 +122,14 @@ export const DashboardScreen = () => {
 
     useFocusEffect(
         useCallback(() => {
-            fetchData(false, 'Dashboard.focus'); // Normal navigation = throttle check
-            checkFirstAccess();
+            fetchData(false, 'Dashboard.focus');
         }, [])
     );
 
     const onRefresh = () => {
         setRefreshing(true);
-        fetchData(true, 'Dashboard.refresh'); // Pull to refresh = force check
+        fetchData(true, 'Dashboard.refresh');
     };
-
-
 
     // Plate search handler
     const handlePlateSearch = async () => {
@@ -267,7 +271,12 @@ export const DashboardScreen = () => {
                                         <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: theme.colors.error, marginRight: 4 }} />
                                         <Text style={{ color: theme.colors.error, fontSize: 10, fontWeight: '700' }}>{pendingCount} PENDÊNCIAS</Text>
                                     </View>
-                                ) : hasServerUpdates ? (
+                                ) : syncStatus === 'BOOTSTRAP_REQUIRED' ? (
+                                    <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(59, 130, 246, 0.2)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
+                                        <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#3b82f6', marginRight: 4 }} />
+                                        <Text style={{ color: '#3b82f6', fontSize: 10, fontWeight: '700' }}>PRIMEIRA SINCRONIA NECESSÁRIA</Text>
+                                    </View>
+                                ) : syncStatus === 'UPDATES_AVAILABLE' ? (
                                     <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(212, 175, 55, 0.2)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
                                         <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: theme.colors.primary, marginRight: 4 }} />
                                         <Text style={{ color: theme.colors.primary, fontSize: 10, fontWeight: '700' }}>ATUALIZAÇÕES DISPONÍVEIS</Text>
@@ -285,12 +294,12 @@ export const DashboardScreen = () => {
                             onPress={handleSync}
                             disabled={isSyncing}
                             style={{
-                                backgroundColor: isSyncing ? theme.colors.background : theme.colors.primary,
+                                backgroundColor: isSyncing ? theme.colors.background : (syncStatus === 'BOOTSTRAP_REQUIRED' ? '#3b82f6' : theme.colors.primary),
                                 paddingHorizontal: 16,
                                 paddingVertical: 8,
                                 borderRadius: 4,
                                 borderWidth: 1,
-                                borderColor: theme.colors.primary,
+                                borderColor: syncStatus === 'BOOTSTRAP_REQUIRED' ? '#3b82f6' : theme.colors.primary,
                                 opacity: isSyncing ? 0.7 : 1,
                                 flexDirection: 'row',
                                 alignItems: 'center',
@@ -300,10 +309,10 @@ export const DashboardScreen = () => {
                             {isSyncing ? (
                                 <Activity size={14} color={theme.colors.primary} />
                             ) : (
-                                <View style={{ width: 0 }} /> // Spacer/Icon placeholder
+                                <View style={{ width: 0 }} />
                             )}
                             <Text style={{ color: isSyncing ? theme.colors.primary : '#000', fontWeight: '900', fontSize: 10 }}>
-                                {isSyncing ? 'SYNCING...' : 'SINCRONIZAR'}
+                                {isSyncing ? 'SYNCING...' : (syncStatus === 'BOOTSTRAP_REQUIRED' ? 'BAIXAR TUDO' : 'SINCRONIZAR')}
                             </Text>
                         </TouchableOpacity>
                     </View>

@@ -141,28 +141,6 @@ export const osService = {
     // --- In-flight Promise ---
     _listOSPromise: null as Promise<OrdemServico[]> | null,
 
-    listOS: async (): Promise<OrdemServico[]> => {
-        // Deduplication: If a read is already in progress, return it
-        if (osService._listOSPromise) {
-            Logger.info('[OSService] listOS - returning in-flight promise');
-            return osService._listOSPromise;
-        }
-
-        osService._listOSPromise = (async () => {
-            try {
-                // Pure Read-Only implementation
-                Logger.info('[OSService] listOS - fetching full hierarchy from Local DB (JOIN)');
-                const mappedList = await OSModel.getAllFull();
-                console.log(`[OSService] ✅ Returning ${mappedList.length} OS items to UI`);
-                return mappedList;
-            } finally {
-                osService._listOSPromise = null;
-            }
-        })();
-
-        return osService._listOSPromise;
-    },
-
     /**
      * Fetches OS data from API without persisting.
      * Used by SyncService to handle the "Pull" phase.
