@@ -167,7 +167,7 @@ class SyncEngine {
                     result.success++;
                 } catch (err: any) {
                     result.failed++;
-                    result.errors.push(`${item.resource}/${item.temp_id}: ${err.message}`);
+                    result.errors.push(`${item.entity_type}/${item.entity_local_id}: ${err.message}`);
                     await SyncQueueModel.markAttempt(item.id, false, err.message);
                 }
             }
@@ -208,11 +208,11 @@ class SyncEngine {
      * Sincronizar um item específico
      */
     private async syncItem(item: SyncQueueItem): Promise<void> {
-        console.log(`[SyncEngine] Syncing ${item.resource}/${item.action}...`);
+        console.log(`[SyncEngine] Syncing ${item.entity_type}/${item.operation}...`);
 
         const payload = item.payload ? JSON.parse(item.payload) : null;
 
-        switch (item.resource) {
+        switch (item.entity_type) {
             case 'cliente':
                 await this.syncCliente(item, payload);
                 break;
@@ -229,7 +229,7 @@ class SyncEngine {
                 await this.syncDespesa(item, payload);
                 break;
             default:
-                throw new Error(`Unknown entity type: ${item.resource}`);
+                throw new Error(`Unknown entity type: ${item.entity_type}`);
         }
 
         // Remover da fila após sucesso
@@ -240,13 +240,13 @@ class SyncEngine {
      * Sincronizar cliente
      */
     private async syncCliente(item: SyncQueueItem, payload: any): Promise<void> {
-        const local = await ClienteModel.getByLocalId(item.temp_id);
+        const local = await ClienteModel.getByLocalId(item.entity_local_id);
         if (!local) throw new Error('Local cliente not found');
 
-        switch (item.action) {
+        switch (item.operation) {
             case 'CREATE': {
                 const response = await api.post('/clientes', {
-                    localId: item.temp_id, // 🆔 IMPORTANTE: Enviar localId para pareamento
+                    localId: item.entity_local_id, // 🆔 IMPORTANTE: Enviar localId para pareamento
                     razaoSocial: local.razao_social,
                     nomeFantasia: local.nome_fantasia,
                     cnpj: local.cnpj,
@@ -263,20 +263,20 @@ class SyncEngine {
                     estado: local.estado,
                     cep: local.cep
                 });
-                await ClienteModel.markAsSynced(item.temp_id, response.data.id);
+                await ClienteModel.markAsSynced(item.entity_local_id, response.data.id);
                 break;
             }
             case 'UPDATE': {
                 if (!local.server_id) throw new Error('No server ID for update');
                 await api.put(`/clientes/${local.server_id}`, payload);
-                await ClienteModel.markAsSynced(item.temp_id, local.server_id);
+                await ClienteModel.markAsSynced(item.entity_local_id, local.server_id);
                 break;
             }
             case 'DELETE': {
                 if (local.server_id) {
                     await api.delete(`/clientes/${local.server_id}`);
                 }
-                await databaseService.runDelete('DELETE FROM clientes WHERE local_id = ?', [item.temp_id]);
+                await databaseService.runDelete('DELETE FROM clientes WHERE local_id = ?', [item.entity_local_id]);
                 break;
             }
         }
@@ -286,10 +286,10 @@ class SyncEngine {
      * Sincronizar OS
      */
     private async syncOS(item: SyncQueueItem, payload: any): Promise<void> {
-        const local = await OSModel.getByLocalId(item.temp_id);
+        const local = await OSModel.getByLocalId(item.entity_local_id);
         if (!local) throw new Error('Local OS not found');
 
-        switch (item.action) {
+        switch (item.operation) {
             case 'CREATE': {
                 // Resolver cliente server_id
                 let clienteServerId: number | null = null;
@@ -300,13 +300,13 @@ class SyncEngine {
                 if (!clienteServerId) throw new Error('Cliente not synced yet');
 
                 const response = await api.post('/ordens-servico', {
-                    localId: item.temp_id, // 🆔 IMPORTANTE
+                    localId: item.entity_local_id, // 🆔 IMPORTANTE
                     clienteId: clienteServerId,
                     data: local.data,
                     dataVencimento: local.data_vencimento,
                     usuarioId: local.usuario_id || undefined
                 });
-                await OSModel.markAsSynced(item.temp_id, response.data.id);
+                await OSModel.markAsSynced(item.entity_local_id, response.data.id);
                 break;
             }
             case 'UPDATE': {
@@ -326,14 +326,14 @@ class SyncEngine {
                     await api.patch(`/ordens-servico/${local.server_id}`, { usuarioId });
                 }
 
-                await OSModel.markAsSynced(item.temp_id, local.server_id);
+                await OSModel.markAsSynced(item.entity_local_id, local.server_id);
                 break;
             }
             case 'DELETE': {
                 if (local.server_id) {
                     await api.delete(`/ordens-servico/${local.server_id}`);
                 }
-                await databaseService.runDelete('DELETE FROM ordens_servico WHERE local_id = ?', [item.temp_id]);
+                await databaseService.runDelete('DELETE FROM ordens_servico WHERE local_id = ?', [item.entity_local_id]);
                 break;
             }
         }
@@ -344,11 +344,11 @@ class SyncEngine {
      */
     private async syncVeiculo(item: SyncQueueItem, payload: any): Promise<void> {
         const local = await VeiculoModel.getById(
-            (await databaseService.getFirst<{ id: number }>('SELECT id FROM veiculos_os WHERE local_id = ?', [item.temp_id]))?.id || 0
+            (await databaseService.getFirst<{ id: number }>('SELECT id FROM veiculos_os WHERE local_id = ?', [item.entity_local_id]))?.id || 0
         );
         if (!local) throw new Error('Local veiculo not found');
 
-        switch (item.action) {
+        switch (item.operation) {
             case 'CREATE': {
                 // Resolver OS server_id
                 let osServerId: number | null = null;
@@ -359,20 +359,20 @@ class SyncEngine {
                 if (!osServerId) throw new Error('OS not synced yet');
 
                 const response = await api.post('/ordens-servico/veiculos', {
-                    localId: item.temp_id, // 🆔 IMPORTANTE
+                    localId: item.entity_local_id, // 🆔 IMPORTANTE
                     ordemServicoId: osServerId,
                     placa: local.placa,
                     modelo: local.modelo,
                     cor: local.cor
                 });
-                await VeiculoModel.markAsSynced(item.temp_id, response.data.id);
+                await VeiculoModel.markAsSynced(item.entity_local_id, response.data.id);
                 break;
             }
             case 'DELETE': {
                 if (local.server_id) {
                     await api.delete(`/ordens-servico/veiculos/${local.server_id}`);
                 }
-                await databaseService.runDelete('DELETE FROM veiculos_os WHERE local_id = ?', [item.temp_id]);
+                await databaseService.runDelete('DELETE FROM veiculos_os WHERE local_id = ?', [item.entity_local_id]);
                 break;
             }
         }
@@ -383,11 +383,11 @@ class SyncEngine {
      */
     private async syncDespesa(item: SyncQueueItem, payload: any): Promise<void> {
         const local = await DespesaModel.getById(
-            (await databaseService.getFirst<{ id: number }>('SELECT id FROM despesas WHERE local_id = ?', [item.temp_id]))?.id || 0
+            (await databaseService.getFirst<{ id: number }>('SELECT id FROM despesas WHERE local_id = ?', [item.entity_local_id]))?.id || 0
         );
         if (!local) throw new Error('Local despesa not found');
 
-        switch (item.action) {
+        switch (item.operation) {
             case 'CREATE': {
                 // Usando o mesmo endpoint do frontend web: /despesas
                 const response = await api.post('/despesas', {
@@ -400,14 +400,14 @@ class SyncEngine {
                     pagoAgora: local.pago_agora === 1,
                     cartaoId: local.cartao_id
                 });
-                await DespesaModel.markAsSynced(item.temp_id, response.data.id);
+                await DespesaModel.markAsSynced(item.entity_local_id, response.data.id);
                 break;
             }
             case 'DELETE': {
                 if (local.server_id) {
                     await api.delete(`/despesas/${local.server_id}`);
                 }
-                await databaseService.runDelete('DELETE FROM despesas WHERE local_id = ?', [item.temp_id]);
+                await databaseService.runDelete('DELETE FROM despesas WHERE local_id = ?', [item.entity_local_id]);
                 break;
             }
         }
@@ -419,10 +419,10 @@ class SyncEngine {
     private async syncPeca(item: SyncQueueItem, payload: any): Promise<void> {
         const { PecaModel } = require('../database/models/PecaModel');
         const { VeiculoModel } = require('../database/models/VeiculoModel');
-        const local = await PecaModel.getByLocalId(item.temp_id);
+        const local = await PecaModel.getByLocalId(item.entity_local_id);
         if (!local) throw new Error('Local peca not found');
 
-        switch (item.action) {
+        switch (item.operation) {
             case 'CREATE': {
                 // Resolver veiculo server_id
                 let veiculoServerId: number | null = null;
@@ -433,26 +433,26 @@ class SyncEngine {
                 if (!veiculoServerId) throw new Error('Veiculo not synced yet');
 
                 const response = await api.post('/ordens-servico/pecas', {
-                    localId: item.temp_id, // 🆔 IMPORTANTE
+                    localId: item.entity_local_id, // 🆔 IMPORTANTE
                     veiculoId: veiculoServerId,
                     tipoPecaId: payload.tipoPecaId,
                     valorCobrado: local.valor_cobrado,
                     descricao: local.descricao
                 });
-                await PecaModel.markAsSynced(item.temp_id, response.data.id);
+                await PecaModel.markAsSynced(item.entity_local_id, response.data.id);
                 break;
             }
             case 'UPDATE': {
                 if (!local.server_id) throw new Error('No server ID for update');
                 await api.patch(`/ordens-servico/pecas/${local.server_id}`, payload);
-                await PecaModel.markAsSynced(item.temp_id, local.server_id);
+                await PecaModel.markAsSynced(item.entity_local_id, local.server_id);
                 break;
             }
             case 'DELETE': {
                 if (local.server_id) {
                     await api.delete(`/ordens-servico/pecas/${local.server_id}`);
                 }
-                await databaseService.runDelete('DELETE FROM pecas_os WHERE local_id = ?', [item.temp_id]);
+                await databaseService.runDelete('DELETE FROM pecas_os WHERE local_id = ?', [item.entity_local_id]);
                 break;
             }
         }

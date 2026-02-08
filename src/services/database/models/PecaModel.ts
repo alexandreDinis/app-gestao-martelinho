@@ -201,9 +201,9 @@ export const PecaModel = {
     async addToSyncQueue(localId: string, operation: 'CREATE' | 'UPDATE' | 'DELETE', payload: any): Promise<void> {
         const { SyncQueueModel } = require('./SyncQueueModel'); // Lazy import loop
         await SyncQueueModel.addToQueue({
-            resource: 'peca',
-            temp_id: localId,
-            action: operation,
+            entity_type: 'peca',
+            entity_local_id: localId,
+            operation: operation,
             payload: payload
         });
     },

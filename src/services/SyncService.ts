@@ -125,71 +125,71 @@ export const SyncService = {
         let pendingItem = await SyncQueueModel.getNextPending();
 
         while (pendingItem) {
-            console.log(`🔄 Processando item: ${pendingItem.resource} - ${pendingItem.action} (ID: ${pendingItem.id}, tentativa ${pendingItem.attempts + 1})`);
+            console.log(`🔄 Processando item: ${pendingItem.entity_type} - ${pendingItem.operation} (ID: ${pendingItem.id}, tentativa ${pendingItem.attempts + 1})`);
 
             try {
                 const payload = pendingItem.payload ? JSON.parse(pendingItem.payload) : null;
                 let serverId: number | null = null;
 
                 // Executar chamada de API baseada no recurso e ação
-                if (pendingItem.resource === 'cliente') {
-                    serverId = await this.syncClienteItem(pendingItem.action, pendingItem.temp_id, payload);
+                if (pendingItem.entity_type === 'cliente') {
+                    serverId = await this.syncClienteItem(pendingItem.operation, pendingItem.entity_local_id, payload);
 
                     // CRÍTICO: Se criou sucesso, atualizar ID local imediatamente
-                    if (pendingItem.action === 'CREATE' && serverId) {
-                        console.log(`✅ Cliente sincronizado: UUID ${pendingItem.temp_id} → ID ${serverId}`);
-                        await ClienteModel.markAsSynced(pendingItem.temp_id, serverId);
+                    if (pendingItem.operation === 'CREATE' && serverId) {
+                        console.log(`✅ Cliente sincronizado: UUID ${pendingItem.entity_local_id} → ID ${serverId}`);
+                        await ClienteModel.markAsSynced(pendingItem.entity_local_id, serverId);
                     }
                 }
-                else if (pendingItem.resource === 'os') {
-                    serverId = await this.syncOSItem(pendingItem.action, pendingItem.temp_id, payload);
+                else if (pendingItem.entity_type === 'os') {
+                    serverId = await this.syncOSItem(pendingItem.operation, pendingItem.entity_local_id, payload);
 
-                    if (pendingItem.action === 'CREATE' && serverId) {
-                        console.log(`✅ OS sincronizada: UUID ${pendingItem.temp_id} → ID ${serverId}`);
-                        await OSModel.markAsSynced(pendingItem.temp_id, serverId);
+                    if (pendingItem.operation === 'CREATE' && serverId) {
+                        console.log(`✅ OS sincronizada: UUID ${pendingItem.entity_local_id} → ID ${serverId}`);
+                        await OSModel.markAsSynced(pendingItem.entity_local_id, serverId);
                     }
                 }
-                else if (pendingItem.resource === 'veiculo') {
-                    serverId = await this.syncVeiculoItem(pendingItem.action, pendingItem.temp_id, payload);
+                else if (pendingItem.entity_type === 'veiculo') {
+                    serverId = await this.syncVeiculoItem(pendingItem.operation, pendingItem.entity_local_id, payload);
 
-                    if (pendingItem.action === 'CREATE' && serverId) {
-                        console.log(`✅ Veículo sincronizado: UUID ${pendingItem.temp_id} → ID ${serverId}`);
-                        await VeiculoModel.markAsSynced(pendingItem.temp_id, serverId);
+                    if (pendingItem.operation === 'CREATE' && serverId) {
+                        console.log(`✅ Veículo sincronizado: UUID ${pendingItem.entity_local_id} → ID ${serverId}`);
+                        await VeiculoModel.markAsSynced(pendingItem.entity_local_id, serverId);
                     }
                 }
-                else if (pendingItem.resource === 'peca') {
-                    serverId = await this.syncPecaItem(pendingItem.action, pendingItem.temp_id, payload);
+                else if (pendingItem.entity_type === 'peca') {
+                    serverId = await this.syncPecaItem(pendingItem.operation, pendingItem.entity_local_id, payload);
 
-                    if (pendingItem.action === 'CREATE' && serverId) {
-                        console.log(`✅ Peça sincronizada: UUID ${pendingItem.temp_id} → ID ${serverId}`);
-                        await PecaModel.markAsSynced(pendingItem.temp_id, serverId);
+                    if (pendingItem.operation === 'CREATE' && serverId) {
+                        console.log(`✅ Peça sincronizada: UUID ${pendingItem.entity_local_id} → ID ${serverId}`);
+                        await PecaModel.markAsSynced(pendingItem.entity_local_id, serverId);
                     }
                 }
-                else if (pendingItem.resource === 'despesa') {
-                    serverId = await this.syncDespesaItem(pendingItem.action, pendingItem.temp_id, payload);
+                else if (pendingItem.entity_type === 'despesa') {
+                    serverId = await this.syncDespesaItem(pendingItem.operation, pendingItem.entity_local_id, payload);
 
-                    if (pendingItem.action === 'CREATE' && serverId) {
-                        console.log(`✅ Despesa sincronizada: UUID ${pendingItem.temp_id} → ID ${serverId}`);
-                        await DespesaModel.markAsSynced(pendingItem.temp_id, serverId);
+                    if (pendingItem.operation === 'CREATE' && serverId) {
+                        console.log(`✅ Despesa sincronizada: UUID ${pendingItem.entity_local_id} → ID ${serverId}`);
+                        await DespesaModel.markAsSynced(pendingItem.entity_local_id, serverId);
                     }
                 }
 
                 // Se não foi CREATE (UPDATE/DELETE), apenas marca como processado/removido da fila
                 // Para CREATE, o markAsSynced já remove da fila
-                if (pendingItem.action !== 'CREATE') {
+                if (pendingItem.operation !== 'CREATE') {
                     // CRÍTICO: Para UPDATE, precisamos atualizar o status local para SYNCED
                     // caso contrário ele fica travado como PENDING_UPDATE e rejeita pulls futuros
-                    if (pendingItem.action === 'UPDATE' && serverId) {
-                        if (pendingItem.resource === 'cliente') {
-                            await ClienteModel.markAsSynced(pendingItem.temp_id, serverId);
-                        } else if (pendingItem.resource === 'os') {
-                            await OSModel.markAsSynced(pendingItem.temp_id, serverId);
-                        } else if (pendingItem.resource === 'veiculo') {
-                            await VeiculoModel.markAsSynced(pendingItem.temp_id, serverId);
-                        } else if (pendingItem.resource === 'peca') {
-                            await PecaModel.markAsSynced(pendingItem.temp_id, serverId);
-                        } else if (pendingItem.resource === 'despesa') {
-                            await DespesaModel.markAsSynced(pendingItem.temp_id, serverId);
+                    if (pendingItem.operation === 'UPDATE' && serverId) {
+                        if (pendingItem.entity_type === 'cliente') {
+                            await ClienteModel.markAsSynced(pendingItem.entity_local_id, serverId);
+                        } else if (pendingItem.entity_type === 'os') {
+                            await OSModel.markAsSynced(pendingItem.entity_local_id, serverId);
+                        } else if (pendingItem.entity_type === 'veiculo') {
+                            await VeiculoModel.markAsSynced(pendingItem.entity_local_id, serverId);
+                        } else if (pendingItem.entity_type === 'peca') {
+                            await PecaModel.markAsSynced(pendingItem.entity_local_id, serverId);
+                        } else if (pendingItem.entity_type === 'despesa') {
+                            await DespesaModel.markAsSynced(pendingItem.entity_local_id, serverId);
                         }
                     } else {
                         // DELETE ou falha silenciosa em update (sem serverId?), apenas limpa fila
@@ -200,7 +200,7 @@ export const SyncService = {
             } catch (error: any) {
                 const api = (await import('./api')).default;
                 const baseURL = api.defaults.baseURL;
-                console.error(`❌ Erro ao processar item ${pendingItem.id} [Resource: ${pendingItem.resource}]:`, {
+                console.error(`❌ Erro ao processar item ${pendingItem.id} [Resource: ${pendingItem.entity_type}]:`, {
                     message: error.message,
                     code: error.code,
                     status: error.response?.status,

@@ -101,9 +101,9 @@ export interface LocalTipoPeca {
 
 export interface SyncQueueItem {
     id: number;
-    resource: string;       // ex: 'cliente', 'os'
-    temp_id: string;       // GUID local
-    action: 'CREATE' | 'UPDATE' | 'DELETE';
+    entity_type: string;       // ex: 'cliente', 'os' (DB: resource)
+    entity_local_id: string;   // GUID local (DB: temp_id)
+    operation: 'CREATE' | 'UPDATE' | 'DELETE'; // (DB: action)
     payload: string | null;
     status: 'PENDING' | 'PROCESSED' | 'ERROR';
     created_at: number;
