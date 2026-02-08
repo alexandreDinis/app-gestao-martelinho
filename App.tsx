@@ -1,4 +1,5 @@
 /// <reference types="nativewind/types" />
+import 'react-native-get-random-values'; // 🔧 Polyfill para crypto.getRandomValues() (necessário para UUID)
 import "./global.css";
 import 'react-native-gesture-handler';
 import React from 'react';
@@ -45,6 +46,7 @@ function AppRoutes() {
 
 import { databaseService } from './src/services/database/DatabaseService';
 import { ActivityIndicator, View } from 'react-native';
+import Toast from 'react-native-toast-message';
 
 export default function App() {
   const [dbReady, setDbReady] = React.useState(false);
@@ -59,6 +61,7 @@ export default function App() {
         setDbReady(true);
       }
     }
+
     init();
   }, []);
 
@@ -84,6 +87,7 @@ export default function App() {
           <AppRoutes />
         </AuthProvider>
       </NavigationContainer>
+      <Toast />
     </SafeAreaProvider>
   );
 }

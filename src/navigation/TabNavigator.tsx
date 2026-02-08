@@ -36,8 +36,25 @@ const TabIcon: React.FC<TabIconProps> = ({ focused, icon, label }) => (
 
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { SyncService } from '../services/SyncService';
+import { useEffect } from 'react';
+
 export const TabNavigator = () => {
     const insets = useSafeAreaInsets();
+
+    useEffect(() => {
+        // Trigger background sync on mount
+        const triggerSync = async () => {
+            try {
+                // We assume there's a connection since the user just logged in/opened the app
+                // SyncService.syncAll has internal checks anyway
+                await SyncService.syncAll(true);
+            } catch (e) {
+                console.error('[TabNavigator] Initial sync failed', e);
+            }
+        };
+        triggerSync();
+    }, []);
 
     return (
         <Tab.Navigator

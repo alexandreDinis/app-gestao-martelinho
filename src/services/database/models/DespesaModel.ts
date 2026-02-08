@@ -5,6 +5,7 @@ import { databaseService } from '../DatabaseService';
 import { v4 as uuidv4 } from 'uuid';
 import { LocalDespesa, SYNC_PRIORITIES } from './types';
 import type { Despesa } from '../../../types';
+import { SyncQueueModel } from './SyncQueueModel';
 
 export interface CreateDespesaLocal {
     data: string;
@@ -38,6 +39,16 @@ export const DespesaModel = {
     },
 
     /**
+     * Buscar despesa por local_id
+     */
+    async getByLocalId(localId: string): Promise<LocalDespesa | null> {
+        return await databaseService.getFirst<LocalDespesa>(
+            `SELECT * FROM despesas WHERE local_id = ?`,
+            [localId]
+        );
+    },
+
+    /**
      * Buscar despesas por período
      */
     async getByPeriod(startDate: string, endDate: string): Promise<LocalDespesa[]> {
@@ -64,19 +75,47 @@ export const DespesaModel = {
      */
     async upsertFromServer(despesa: Despesa): Promise<LocalDespesa> {
         const now = Date.now();
-        const existing = await databaseService.getFirst<LocalDespesa>(
+
+        // 1. Tentar buscar por server_id
+        let existing = await databaseService.getFirst<LocalDespesa>(
             `SELECT * FROM despesas WHERE server_id = ?`,
             [despesa.id]
         );
 
+        // 2. Fallback: Tentar buscar por localId se fornecido
+        if (!existing && despesa.localId) {
+            existing = await this.getByLocalId(despesa.localId);
+            if (existing) {
+                console.log(`[DespesaModel] Despesa encontrada via localId: ${despesa.localId}`);
+            }
+        }
+
         if (existing) {
+            // 🛡️ SEGURANÇA: Não sobrescrever se houver alterações locais pendentes
+            if (existing.sync_status !== 'SYNCED') {
+                // Zombie Check: Se status é PENDING mas não está naf ila, é um estado inconsistente e devemos aceitar o server
+                // Nota: DespesaModel usa 'despesa' como entity_type na tabela mas 'resource' no model?
+                // Verificando addToSyncQueue: VALUES ('despesa', ...). O SyncQueueModel.hasPending busca por 'resource'.
+                // O SyncQueueModel novo busca por resource. DespesaModel usa 'despesa'.
+                const isReallyPending = await SyncQueueModel.hasPending('despesa', existing.local_id);
+
+                if (isReallyPending) {
+                    console.log(`[DespesaModel] 🛡️ Ignorando update do servidor para despesa ${existing.id} (status: ${existing.sync_status}, queue: YES)`);
+                    return existing;
+                } else {
+                    console.log(`[DespesaModel] 🧟 Zombie detected! Status ${existing.sync_status} but not in Queue. Overwriting with Server data.`);
+                }
+            }
+
             await databaseService.runUpdate(
                 `UPDATE despesas SET
+          server_id = ?,
           data_despesa = ?, data_vencimento = ?, valor = ?, categoria = ?,
           descricao = ?, pago_agora = ?, meio_pagamento = ?, cartao_id = ?,
           sync_status = 'SYNCED', last_synced_at = ?, updated_at = ?
          WHERE id = ?`,
                 [
+                    despesa.id,
                     despesa.dataDespesa,
                     despesa.dataVencimento || null,
                     despesa.valor,
@@ -92,7 +131,7 @@ export const DespesaModel = {
             );
             return (await this.getById(existing.id))!;
         } else {
-            const localId = uuidv4();
+            const localId = despesa.localId || uuidv4();
             const id = await databaseService.runInsert(
                 `INSERT INTO despesas (
           local_id, server_id, version, data_despesa, data_vencimento,
@@ -174,7 +213,7 @@ export const DespesaModel = {
             [serverId, Date.now(), localId]
         );
         await databaseService.runDelete(
-            `DELETE FROM sync_queue WHERE entity_type = 'despesa' AND entity_local_id = ?`,
+            `DELETE FROM sync_queue WHERE resource = 'despesa' AND temp_id = ?`,
             [localId]
         );
     },
@@ -188,7 +227,7 @@ export const DespesaModel = {
             [localId]
         );
         await databaseService.runUpdate(
-            `UPDATE sync_queue SET error_message = ? WHERE entity_type = 'despesa' AND entity_local_id = ?`,
+            `UPDATE sync_queue SET error_message = ? WHERE resource = 'despesa' AND temp_id = ?`,
             [errorMessage, localId]
         );
     },
@@ -200,21 +239,20 @@ export const DespesaModel = {
         const now = Date.now();
 
         const existing = await databaseService.getFirst<{ id: number }>(
-            `SELECT id FROM sync_queue WHERE entity_type = 'despesa' AND entity_local_id = ?`,
+            `SELECT id FROM sync_queue WHERE resource = 'despesa' AND temp_id = ?`,
             [localId]
         );
 
         if (existing) {
             await databaseService.runUpdate(
-                `UPDATE sync_queue SET operation = ?, payload = ?, created_at = ? WHERE id = ?`,
+                `UPDATE sync_queue SET action = ?, payload = ?, created_at = ? WHERE id = ?`,
                 [operation, payload ? JSON.stringify(payload) : null, now, existing.id]
             );
         } else {
-            // PRIORIDADE CRÍTICA para despesas
             await databaseService.runInsert(
-                `INSERT INTO sync_queue (entity_type, entity_local_id, operation, payload, priority, created_at)
-         VALUES ('despesa', ?, ?, ?, ?, ?)`,
-                [localId, operation, payload ? JSON.stringify(payload) : null, SYNC_PRIORITIES.CRITICAL, now]
+                `INSERT INTO sync_queue (resource, temp_id, action, payload, created_at, status)
+         VALUES ('despesa', ?, ?, ?, ?, 'PENDING')`,
+                [localId, operation, payload ? JSON.stringify(payload) : null, now]
             );
         }
     },
@@ -235,7 +273,7 @@ export const DespesaModel = {
         } else {
             await databaseService.runDelete(`DELETE FROM despesas WHERE id = ?`, [id]);
             await databaseService.runDelete(
-                `DELETE FROM sync_queue WHERE entity_type = 'despesa' AND entity_local_id = ?`,
+                `DELETE FROM sync_queue WHERE resource = 'despesa' AND temp_id = ?`,
                 [existing.local_id]
             );
         }

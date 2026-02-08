@@ -64,6 +64,7 @@ export interface Cliente {
     contato: string;
     email: string;
     status: StatusCliente;
+    localId?: string;
     // Address Fields
     logradouro?: string;
     numero?: string;
@@ -102,6 +103,7 @@ export interface ClienteFiltros {
 
 export interface PecaOS {
     id: number;
+    localId?: string;
     nomePeca: string;
     valorCobrado: number;
     descricao?: string;
@@ -109,6 +111,7 @@ export interface PecaOS {
 
 export interface VeiculoOS {
     id: number;
+    localId?: string;
     placa: string;
     modelo: string;
     cor: string;
@@ -133,6 +136,7 @@ export interface OrdemServico {
     usuarioNome?: string;
     usuarioEmail?: string;
     empresaId: number;
+    localId?: string;
 }
 
 export interface CreateOSRequest {
@@ -227,4 +231,5 @@ export interface Despesa {
     dataVencimento?: string;
     meioPagamento?: string;
     cartaoId?: number;
+    localId?: string;
 }

@@ -13,14 +13,16 @@ const api = axios.create({
     },
 });
 
+console.log(`[API] Base URL configured: ${API_BASE_URL}`);
+
 import { Logger } from './Logger';
 
 // Request Interceptor
 api.interceptors.request.use(
     async (config) => {
         try {
-            // Log Request
-            Logger.info(`API Request: ${config.method?.toUpperCase()} ${config.url}`, config.data);
+            // Log Request URL for debugging
+            console.log(`[API] Requesting: ${config.method?.toUpperCase()} ${config.baseURL}${config.url}`);
 
             const userStr = await SecureStore.getItemAsync('user');
             if (userStr) {
@@ -43,20 +45,23 @@ api.interceptors.request.use(
 // Response Interceptor
 api.interceptors.response.use(
     (response) => {
-        Logger.info(`API Response: ${response.status} ${response.config.url}`, response.data);
+        // Logger.info(`API Response: ${response.status} ${response.config.url}`, response.data);
         return response;
     },
     async (error) => {
         if (error.response) {
             Logger.error(`API Error: ${error.response.status} ${error.config?.url}`, error.response.data);
-            if (error.response.status === 401) {
-                Logger.warn("[API] 401 Unauthorized - Token invalid/expired");
+            if (error.response.status === 401 || error.response.status === 403) {
+                Logger.warn(`[API] ${error.response.status} - Token invalid/expired or Forbidden`);
                 // In React Native, we can't just redirect via window.location.
                 // We should clear storage so the App's AuthState updates on next check.
                 await SecureStore.deleteItemAsync('user');
+
+                // Opcional: Disparar evento para a UI redirecionar para Login se estiver ouvindo
             }
         } else {
-            Logger.error("API Network Error:", error.message);
+            const fullURL = `${error.config?.baseURL || ''}${error.config?.url || ''}`;
+            Logger.error(`API Network Error: ${error.message} [URL: ${fullURL}]`);
         }
         return Promise.reject(error);
     }

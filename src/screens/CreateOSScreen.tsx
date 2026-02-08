@@ -1,19 +1,25 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, TextInput, TouchableOpacity, ScrollView, Alert, ActivityIndicator, FlatList, Modal } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
+import { StackNavigationProp } from '@react-navigation/stack';
 import { ChevronLeft, Search, User, Car, Calendar, CheckCircle, X } from 'lucide-react-native';
 import { Picker } from '@react-native-picker/picker';
 import { osService } from '../services/osService';
 import { userService } from '../services/userService';
 import { Cliente } from '../types';
+import { RootStackParamList } from '../navigation/types';
 import { theme } from '../theme';
 import { Card, Button, Input } from '../components/ui';
+import { SimplePlateInput } from '../components/forms/SimplePlateInput';
+import Toast from 'react-native-toast-message';
 
-import { StackNavigationProp } from '@react-navigation/stack';
-import { RootStackParamList } from '../navigation/types';
+import { OfflineDebug } from '../utils/OfflineDebug';
+
+// ...
 
 export const CreateOSScreen = () => {
     const navigation = useNavigation<StackNavigationProp<RootStackParamList>>();
+    const [isForceOffline, setIsForceOffline] = useState(OfflineDebug.isForceOffline());
 
     // Form State
     const [selectedClient, setSelectedClient] = useState<Cliente | null>(null);
@@ -30,6 +36,12 @@ export const CreateOSScreen = () => {
     // Loading States
     const [loadingClients, setLoadingClients] = useState(false);
     const [submitting, setSubmitting] = useState(false);
+
+    const toggleOfflineMode = () => {
+        const newMode = !OfflineDebug.isForceOffline();
+        OfflineDebug.setForceOffline(newMode);
+        setIsForceOffline(newMode);
+    };
 
     useEffect(() => {
         if (showClientModal && clients.length === 0) {
@@ -71,12 +83,57 @@ export const CreateOSScreen = () => {
         loadUsers();
     }, []);
 
+    const [loadingPlate, setLoadingPlate] = useState(false);
+
     const loadUsers = async () => {
         try {
             const data = await userService.getUsers();
             setUsers(data);
         } catch (e) {
             console.error('Failed to load users', e);
+        }
+    };
+
+    const handleCheckPlate = async () => {
+        const placaLimpa = plate.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+        if (placaLimpa.length < 3) {
+            Alert.alert('Atenção', 'Digite pelo menos 3 caracteres.');
+            return;
+        }
+
+        setLoadingPlate(true);
+        try {
+            const check = await osService.verificarPlaca(placaLimpa);
+            if (check.existe && check.veiculoExistente) {
+                Alert.alert(
+                    'Veículo Encontrado',
+                    `Modelo: ${check.veiculoExistente.modelo}\nCor: ${check.veiculoExistente.cor}\n\nDeseja carregar estes dados?`,
+                    [
+                        { text: 'Não', style: 'cancel' },
+                        {
+                            text: 'Sim, preencher',
+                            onPress: () => {
+                                setModel(check.veiculoExistente!.modelo || '');
+                                setColor(check.veiculoExistente!.cor || '');
+                                Toast.show({
+                                    type: 'success',
+                                    text1: 'Dados preenchidos',
+                                });
+                            }
+                        }
+                    ]
+                );
+            } else {
+                Toast.show({
+                    type: 'info',
+                    text1: 'Veículo Novo',
+                    text2: 'Preencha os dados manualmente.',
+                });
+            }
+        } catch (error) {
+            console.error(error);
+        } finally {
+            setLoadingPlate(false);
         }
     };
 
@@ -103,7 +160,7 @@ export const CreateOSScreen = () => {
             // 2. Add Vehicle
             await osService.addVeiculo({
                 ordemServicoId: os.id,
-                placa: plate.toUpperCase(),
+                placa: plate.replace(/[^a-zA-Z0-9]/g, '').toUpperCase(),
                 modelo: model,
                 cor: color || 'Não informada'
             });
@@ -132,6 +189,7 @@ export const CreateOSScreen = () => {
                 style={{
                     flexDirection: 'row',
                     alignItems: 'center',
+                    justifyContent: 'space-between',
                     paddingHorizontal: 16,
                     paddingTop: 50,
                     paddingBottom: 16,
@@ -140,13 +198,39 @@ export const CreateOSScreen = () => {
                     borderBottomColor: theme.colors.border,
                 }}
             >
-                <TouchableOpacity onPress={() => navigation.goBack()} style={{ marginRight: 16 }}>
-                    <ChevronLeft size={24} color={theme.colors.primary} />
-                </TouchableOpacity>
-                <View>
-                    <Text style={{ color: theme.colors.primary, fontSize: 18, fontWeight: '900', letterSpacing: 1 }}>NOVA OS</Text>
-                    <Text style={{ color: theme.colors.textMuted, fontSize: 10, letterSpacing: 1 }}>Preencha os dados iniciais</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    <TouchableOpacity onPress={() => navigation.goBack()} style={{ marginRight: 16 }}>
+                        <ChevronLeft size={24} color={theme.colors.primary} />
+                    </TouchableOpacity>
+                    <View>
+                        <Text style={{ color: theme.colors.primary, fontSize: 18, fontWeight: '900', letterSpacing: 1 }}>NOVA OS</Text>
+                        <Text style={{ color: theme.colors.textMuted, fontSize: 10, letterSpacing: 1 }}>Preencha os dados iniciais</Text>
+                    </View>
                 </View>
+
+                {/* Offline Toggle */}
+                <TouchableOpacity
+                    onPress={toggleOfflineMode}
+                    style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        backgroundColor: isForceOffline ? 'rgba(239, 68, 68, 0.2)' : 'rgba(34, 197, 94, 0.2)',
+                        paddingHorizontal: 8,
+                        paddingVertical: 4,
+                        borderRadius: 12,
+                        borderWidth: 1,
+                        borderColor: isForceOffline ? theme.colors.error : theme.colors.success
+                    }}
+                >
+                    <Text style={{
+                        color: isForceOffline ? theme.colors.error : theme.colors.success,
+                        fontSize: 10,
+                        fontWeight: '700',
+                        marginRight: 4
+                    }}>
+                        {isForceOffline ? '✈️ OFF' : '🌐 ON'}
+                    </Text>
+                </TouchableOpacity>
             </View>
 
             <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16 }}>
@@ -221,14 +305,15 @@ export const CreateOSScreen = () => {
                         <Text style={{ color: theme.colors.textSecondary, fontSize: 12, marginLeft: 8 }}>Dados do veículo</Text>
                     </View>
 
-                    <Input
-                        label="PLACA"
-                        placeholder="ABC-1234"
-                        value={plate}
-                        onChangeText={t => setPlate(t.toUpperCase())}
-                        maxLength={8}
-                        containerStyle={{ marginBottom: 16 }}
-                    />
+                    <View style={{ marginBottom: 16 }}>
+                        <SimplePlateInput
+                            value={plate}
+                            onChange={setPlate}
+                            onSearch={handleCheckPlate}
+                            isSearching={loadingPlate}
+                            buttonLabel="VERIFICAR PLACA"
+                        />
+                    </View>
                     <Input
                         label="MODELO"
                         placeholder="Ex: Fiat Uno"
@@ -256,10 +341,10 @@ export const CreateOSScreen = () => {
                 <Button onPress={handleCreate} loading={submitting} disabled={submitting}>
                     {submitting ? 'CRIANDO...' : 'CRIAR ORDEM >>'}
                 </Button>
-            </ScrollView>
+            </ScrollView >
 
             {/* Client Selection Modal */}
-            <Modal visible={showClientModal} animationType="slide" transparent>
+            < Modal visible={showClientModal} animationType="slide" transparent >
                 <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.9)', paddingTop: 40 }}>
                     <View
                         style={{
@@ -339,7 +424,7 @@ export const CreateOSScreen = () => {
                         )}
                     </View>
                 </View>
-            </Modal>
+            </Modal >
         </View >
     );
 };

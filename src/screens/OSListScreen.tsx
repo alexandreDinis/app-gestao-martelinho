@@ -1,11 +1,13 @@
 import React, { useState, useCallback, useMemo } from 'react';
 import { View, Text, FlatList, TouchableOpacity, RefreshControl, TextInput, Modal, ScrollView, Alert, ActivityIndicator } from 'react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
-import { FileText, Calendar, DollarSign, Search, Clock, CheckCircle, Ban, Plus, User, ChevronRight } from 'lucide-react-native';
+import { FileText, Calendar, DollarSign, Search, Clock, CheckCircle, Ban, Plus, User, ChevronRight, Trash2 } from 'lucide-react-native';
 import { theme } from '../theme';
 import { Card, OSStatusBadge } from '../components/ui';
 import { osService } from '../services/osService';
+import { SyncService } from '../services/SyncService';
 import { OrdemServico, OSStatus, Cliente } from '../types';
+import { OfflineDebug } from '../utils/OfflineDebug';
 
 type TabType = 'iniciadas' | 'finalizadas' | 'canceladas' | 'atrasadas';
 
@@ -43,10 +45,24 @@ export const OSListScreen = () => {
     const fetchOrdens = async () => {
         try {
             setLoading(true);
+            // Apenas carrega do banco local (offline first)
             const data = await osService.listOS();
             setOrdens(data);
         } catch (error) {
             console.error('Failed to load OS:', error);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleRefresh = async () => {
+        setLoading(true);
+        try {
+            await SyncService.syncAll(true);
+            await fetchOrdens();
+        } catch (error) {
+            console.error('Sync failed:', error);
+            Alert.alert('Erro', 'Falha na sincronização. Verifique sua conexão.');
         } finally {
             setLoading(false);
         }
@@ -202,6 +218,13 @@ export const OSListScreen = () => {
         </TouchableOpacity>
     );
 
+    const toggleOfflineMode = () => {
+        const newMode = !OfflineDebug.isForceOffline();
+        OfflineDebug.setForceOffline(newMode);
+        // Forçar nova busca (que vai olhar o modo offline atualizado)
+        fetchOrdens();
+    };
+
     return (
         <View style={{ flex: 1, backgroundColor: theme.colors.background }}>
             {/* Header */}
@@ -222,7 +245,30 @@ export const OSListScreen = () => {
                             ORDENS DE SERVIÇO
                         </Text>
                     </View>
-                    {/* Button removed, now using FAB */}<View />
+
+                    {/* Offline Toggle */}
+                    <TouchableOpacity
+                        onPress={toggleOfflineMode}
+                        style={{
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            backgroundColor: OfflineDebug.isForceOffline() ? 'rgba(239, 68, 68, 0.2)' : 'rgba(34, 197, 94, 0.2)',
+                            paddingHorizontal: 8,
+                            paddingVertical: 4,
+                            borderRadius: 12,
+                            borderWidth: 1,
+                            borderColor: OfflineDebug.isForceOffline() ? theme.colors.error : theme.colors.success
+                        }}
+                    >
+                        <Text style={{
+                            color: OfflineDebug.isForceOffline() ? theme.colors.error : theme.colors.success,
+                            fontSize: 10,
+                            fontWeight: '700',
+                            marginRight: 4
+                        }}>
+                            {OfflineDebug.isForceOffline() ? '✈️ OFF' : '🌐 ON'}
+                        </Text>
+                    </TouchableOpacity>
                 </View>
 
                 {/* Tabs */}
@@ -293,7 +339,7 @@ export const OSListScreen = () => {
                 keyExtractor={(item) => item.id.toString()}
                 contentContainerStyle={{ padding: 16 }}
                 refreshControl={
-                    <RefreshControl refreshing={loading} onRefresh={fetchOrdens} tintColor={theme.colors.primary} />
+                    <RefreshControl refreshing={loading} onRefresh={handleRefresh} tintColor={theme.colors.primary} />
                 }
                 ListEmptyComponent={
                     <View style={{ alignItems: 'center', padding: 40 }}>
