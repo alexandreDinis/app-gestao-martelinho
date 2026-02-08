@@ -156,8 +156,10 @@ class SyncEngine {
 
         try {
             console.log('[SyncEngine] Starting sync...');
+
+            // 1. PUSH: Envia dados locais pendentes (Queue)
             const items = await SyncQueueModel.getPending();
-            console.log(`[SyncEngine] Found ${items.length} items to sync`);
+            console.log(`[SyncEngine] Found ${items.length} items to PUSH`);
 
             for (const item of items) {
                 try {
@@ -169,6 +171,23 @@ class SyncEngine {
                     await SyncQueueModel.markAttempt(item.id, false, err.message);
                 }
             }
+
+            // 2. PULL: Baixa dados do servidor (CRÍTICO: Ordem importa!)
+            console.log('[SyncEngine] Starting PULL phase...');
+            const { SyncService } = require('../SyncService');
+
+            // 2.1 Metadados (Users, Peças)
+            await SyncService.syncMetadata();
+
+            // 2.2 Clientes (Dados completos com endereço) 
+            // ⚠️ DEVE RODAR ANTES DE OS PARA PREENCHER ENDEREÇOS
+            await SyncService.syncClientes();
+
+            // 2.3 Ordens de Serviço (Dados parciais de clientes)
+            await SyncService.syncOS();
+
+            // 2.4 Despesas
+            // await SyncService.syncDespesas(); // Se houver
 
             this.lastSyncTime = new Date();
             await databaseService.setMetadata('last_sync', this.lastSyncTime.toISOString());
@@ -203,6 +222,9 @@ class SyncEngine {
             case 'veiculo':
                 await this.syncVeiculo(item, payload);
                 break;
+            case 'peca':
+                await this.syncPeca(item, payload);
+                break;
             case 'despesa':
                 await this.syncDespesa(item, payload);
                 break;
@@ -224,6 +246,7 @@ class SyncEngine {
         switch (item.operation) {
             case 'CREATE': {
                 const response = await api.post('/clientes', {
+                    localId: item.entity_local_id, // 🆔 IMPORTANTE: Enviar localId para pareamento
                     razaoSocial: local.razao_social,
                     nomeFantasia: local.nome_fantasia,
                     cnpj: local.cnpj,
@@ -277,19 +300,32 @@ class SyncEngine {
                 if (!clienteServerId) throw new Error('Cliente not synced yet');
 
                 const response = await api.post('/ordens-servico', {
+                    localId: item.entity_local_id, // 🆔 IMPORTANTE
                     clienteId: clienteServerId,
                     data: local.data,
-                    dataVencimento: local.data_vencimento
+                    dataVencimento: local.data_vencimento,
+                    usuarioId: local.usuario_id || undefined
                 });
                 await OSModel.markAsSynced(item.entity_local_id, response.data.id);
                 break;
             }
             case 'UPDATE': {
                 if (!local.server_id) throw new Error('No server ID for update');
-                // Update de status
+
+                // 1. Update de status
                 if (payload?.status) {
+                    console.log(`[SyncEngine] Updating status to ${payload.status} for OS ${local.server_id}`);
                     await api.patch(`/ordens-servico/${local.server_id}/status`, { status: payload.status });
                 }
+
+                // 2. Update de responsável (Técnico)
+                const usuarioId = payload?.usuarioId || payload?.usuario_id;
+                if (usuarioId !== undefined) {
+                    console.log(`[SyncEngine] Updating responsible to ${usuarioId} for OS ${local.server_id}`);
+                    // O endpoint padrão de update costuma aceitar o objeto parcial
+                    await api.patch(`/ordens-servico/${local.server_id}`, { usuarioId });
+                }
+
                 await OSModel.markAsSynced(item.entity_local_id, local.server_id);
                 break;
             }
@@ -323,6 +359,7 @@ class SyncEngine {
                 if (!osServerId) throw new Error('OS not synced yet');
 
                 const response = await api.post('/ordens-servico/veiculos', {
+                    localId: item.entity_local_id, // 🆔 IMPORTANTE
                     ordemServicoId: osServerId,
                     placa: local.placa,
                     modelo: local.modelo,
@@ -371,6 +408,51 @@ class SyncEngine {
                     await api.delete(`/despesas/${local.server_id}`);
                 }
                 await databaseService.runDelete('DELETE FROM despesas WHERE local_id = ?', [item.entity_local_id]);
+                break;
+            }
+        }
+    }
+
+    /**
+     * Sincronizar peça/serviço
+     */
+    private async syncPeca(item: SyncQueueItem, payload: any): Promise<void> {
+        const { PecaModel } = require('../database/models/PecaModel');
+        const { VeiculoModel } = require('../database/models/VeiculoModel');
+        const local = await PecaModel.getByLocalId(item.entity_local_id);
+        if (!local) throw new Error('Local peca not found');
+
+        switch (item.operation) {
+            case 'CREATE': {
+                // Resolver veiculo server_id
+                let veiculoServerId: number | null = null;
+                if (local.veiculo_local_id) {
+                    const veiculo = await VeiculoModel.getByLocalId(local.veiculo_local_id);
+                    veiculoServerId = veiculo?.server_id || null;
+                }
+                if (!veiculoServerId) throw new Error('Veiculo not synced yet');
+
+                const response = await api.post('/ordens-servico/pecas', {
+                    localId: item.entity_local_id, // 🆔 IMPORTANTE
+                    veiculoId: veiculoServerId,
+                    tipoPecaId: payload.tipoPecaId,
+                    valorCobrado: local.valor_cobrado,
+                    descricao: local.descricao
+                });
+                await PecaModel.markAsSynced(item.entity_local_id, response.data.id);
+                break;
+            }
+            case 'UPDATE': {
+                if (!local.server_id) throw new Error('No server ID for update');
+                await api.patch(`/ordens-servico/pecas/${local.server_id}`, payload);
+                await PecaModel.markAsSynced(item.entity_local_id, local.server_id);
+                break;
+            }
+            case 'DELETE': {
+                if (local.server_id) {
+                    await api.delete(`/ordens-servico/pecas/${local.server_id}`);
+                }
+                await databaseService.runDelete('DELETE FROM pecas_os WHERE local_id = ?', [item.entity_local_id]);
                 break;
             }
         }

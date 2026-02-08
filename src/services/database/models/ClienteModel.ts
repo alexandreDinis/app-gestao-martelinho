@@ -5,6 +5,7 @@ import { databaseService } from '../DatabaseService';
 import { v4 as uuidv4 } from 'uuid';
 import { LocalCliente, SyncStatus, SYNC_PRIORITIES } from './types';
 import type { Cliente, ClienteRequest } from '../../../types';
+import { SyncQueueModel } from './SyncQueueModel';
 
 export const ClienteModel = {
     /**
@@ -37,7 +38,7 @@ export const ClienteModel = {
     },
 
     /**
-     * Buscar cliente por local_id
+     * Buscar cliente por local_id (UUID)
      */
     async getByLocalId(localId: string): Promise<LocalCliente | null> {
         return await databaseService.getFirst<LocalCliente>(
@@ -45,6 +46,8 @@ export const ClienteModel = {
             [localId]
         );
     },
+
+
 
     /**
      * Buscar clientes por termo de busca (nome, fantasia, cnpj, cpf)
@@ -113,24 +116,80 @@ export const ClienteModel = {
      * Salvar múltiplos clientes do servidor no cache local (Batch)
      */
     async upsertBatch(clientes: Cliente[]): Promise<void> {
-        // TODO: Usar transação real quando disponível no DatabaseService
-        // Por enquanto, processar em série para garantir consistência
-        for (const cliente of clientes) {
-            await this.upsertFromServer(cliente);
+        const db = databaseService.getDatabase();
+
+        // 🚀 PERFORMANCE: Chunked processing to prevent locks during large syncs
+        const CHUNK_SIZE = 20; // Clientes são mais leves que OS, podemos usar batch maior
+
+        for (let i = 0; i < clientes.length; i += CHUNK_SIZE) {
+            const chunk = clientes.slice(i, i + CHUNK_SIZE);
+            console.log(`[ClienteModel] Processing batch chunk ${i / CHUNK_SIZE + 1} (${chunk.length} items)...`);
+
+            await db.withTransactionAsync(async () => {
+                for (const cliente of chunk) {
+                    await this.upsertFromServer(cliente);
+                }
+            });
+
+            // ⏳ YIELD to Event Loop
+            if (i + CHUNK_SIZE < clientes.length) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
         }
     },
-
     /**
-     * Salvar cliente do servidor no cache local
-     */
+         * Salvar cliente do servidor no cache local
+         */
     async upsertFromServer(cliente: Cliente): Promise<LocalCliente> {
         const now = Date.now();
-        const existing = await this.getByServerId(cliente.id);
+        // console.log(`[ClienteModel] upsertFromServer: Buscando cliente server_id=${cliente.id} ou localId=${cliente.localId}`);
+
+        // 1. Tentar buscar por server_id
+        let existing = await this.getByServerId(cliente.id);
+
+        // 2. Fallback: Tentar buscar pelo localId (identidade offline) se fornecido
+        if (!existing && cliente.localId) {
+            existing = await this.getByLocalId(cliente.localId);
+            if (existing) {
+                // console.log(`[ClienteModel] Cliente encontrado via localId: ${cliente.localId} (sem server_id vinculado ainda)`);
+            }
+        }
 
         if (existing) {
+            console.log(`[ClienteModel] Encontrado local: id=${existing.id}, sync_status=${existing.sync_status}, nome=${existing.razao_social}`);
+
+            // 🛡️ SEGURANÇA: Não sobrescrever se houver alterações locais pendentes
+            if (existing.sync_status !== 'SYNCED') {
+                // Zombie Check: Se status é PENDING mas não está na fila, é um estado inconsistente e devemos aceitar o server
+                const isReallyPending = await SyncQueueModel.hasPending('cliente', existing.local_id);
+
+                if (isReallyPending) {
+                    console.log(`[ClienteModel] 🛡️ Ignorando update do servidor para cliente ${existing.id} (status: ${existing.sync_status}, queue: YES)`);
+                    return existing;
+                } else {
+                    console.log(`[ClienteModel] 🧟 Zombie detected! Status ${existing.sync_status} but not in Queue (or Dead). Overwriting with Server data.`);
+                }
+            }
+
+            // console.log(`[ClienteModel] Sobrescrevendo cliente ${existing.id} com dados do servidor`);
+
+            // 🛡️ INTELLIGENT MERGE: Não apagar dados locais (como endereço) se o server mandar null (comum em sync de OS)
+            const razaoSocial = cliente.razaoSocial || existing.razao_social;
+            const nomeFantasia = cliente.nomeFantasia || existing.nome_fantasia;
+            const cnpj = cliente.cnpj || existing.cnpj;
+            const cpf = cliente.cpf || existing.cpf;
+            const logradouro = cliente.logradouro || existing.logradouro;
+            const numero = cliente.numero || existing.numero;
+            const complemento = cliente.complemento || existing.complemento;
+            const bairro = cliente.bairro || existing.bairro;
+            const cidade = cliente.cidade || existing.cidade;
+            const estado = cliente.estado || existing.estado;
+            const cep = cliente.cep || existing.cep;
+
             // Atualizar existente
             await databaseService.runUpdate(
                 `UPDATE clientes SET
+          server_id = ?, 
           razao_social = ?, nome_fantasia = ?, cnpj = ?, cpf = ?,
           tipo_pessoa = ?, contato = ?, email = ?, status = ?,
           logradouro = ?, numero = ?, complemento = ?, bairro = ?,
@@ -138,21 +197,22 @@ export const ClienteModel = {
           sync_status = 'SYNCED', last_synced_at = ?, updated_at = ?
          WHERE id = ?`,
                 [
-                    cliente.razaoSocial,
-                    cliente.nomeFantasia || null,
-                    cliente.cnpj || null,
-                    cliente.cpf || null,
-                    cliente.tipoPessoa || null,
-                    cliente.contato,
-                    cliente.email,
-                    cliente.status,
-                    cliente.logradouro || null,
-                    cliente.numero || null,
-                    cliente.complemento || null,
-                    cliente.bairro || null,
-                    cliente.cidade || null,
-                    cliente.estado || null,
-                    cliente.cep || null,
+                    cliente.id,
+                    razaoSocial,
+                    nomeFantasia,
+                    cnpj,
+                    cpf,
+                    cliente.tipoPessoa || existing.tipo_pessoa,
+                    cliente.contato || existing.contato,
+                    cliente.email || existing.email,
+                    cliente.status || existing.status,
+                    logradouro,
+                    numero,
+                    complemento,
+                    bairro,
+                    cidade,
+                    estado,
+                    cep,
                     now,
                     now,
                     existing.id
@@ -161,15 +221,15 @@ export const ClienteModel = {
             return (await this.getById(existing.id))!;
         } else {
             // Inserir novo
-            const localId = uuidv4();
-            const uuid = localId; // Usando localId como UUID
+            const localId = cliente.localId || uuidv4(); // Usar o localId vindo do server se existir, senão novo
+            const uuid = localId;
 
             const id = await databaseService.runInsert(
                 `INSERT INTO clientes (
           local_id, uuid, server_id, version, razao_social, nome_fantasia, cnpj, cpf,
           tipo_pessoa, contato, email, status, logradouro, numero, complemento,
           bairro, cidade, estado, cep, sync_status, last_synced_at, updated_at, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SYNCED', ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                 [
                     localId,
                     uuid,
@@ -190,6 +250,7 @@ export const ClienteModel = {
                     cliente.cidade || null,
                     cliente.estado || null,
                     cliente.cep || null,
+                    'SYNCED', // sync_status
                     now,
                     now,
                     now
@@ -209,6 +270,7 @@ export const ClienteModel = {
         const now = Date.now();
         const newVersion = existing.version + 1;
 
+        // 1. Atualizar banco local
         await databaseService.runUpdate(
             `UPDATE clientes SET
         razao_social = COALESCE(?, razao_social),
@@ -252,12 +314,20 @@ export const ClienteModel = {
             ]
         );
 
-        // Adicionar à fila de sync
-        if (existing.sync_status === 'SYNCED') {
-            await this.addToSyncQueue(existing.local_id, 'UPDATE', data);
-        }
+        // 2. Buscar objeto atualizado para garantir payload completo
+        const updatedLocal = await this.getById(id);
+        if (!updatedLocal) return null;
 
-        return await this.getById(id);
+        const fullPayload = this.toApiFormat(updatedLocal);
+
+        // 3. Atualizar/Inserir na Fila de Sync
+        // Se já estava PENDING_CREATE, manter como CREATE mas com dados novos
+        // Se estava SYNCED ou PENDING_UPDATE, tratar como UPDATE com dados completos
+        const action = existing.sync_status === 'PENDING_CREATE' ? 'CREATE' : 'UPDATE';
+
+        await this.addToSyncQueue(existing.local_id, action, fullPayload);
+
+        return updatedLocal;
     },
 
     /**
@@ -311,7 +381,7 @@ export const ClienteModel = {
 
         // Remover da fila de sync
         await databaseService.runDelete(
-            `DELETE FROM sync_queue WHERE entity_type = 'cliente' AND entity_local_id = ?`,
+            `DELETE FROM sync_queue WHERE resource = 'cliente' AND temp_id = ?`,
             [localId]
         );
     },
@@ -326,7 +396,7 @@ export const ClienteModel = {
         );
 
         await databaseService.runUpdate(
-            `UPDATE sync_queue SET error_message = ? WHERE entity_type = 'cliente' AND entity_local_id = ?`,
+            `UPDATE sync_queue SET error_message = ? WHERE resource = 'cliente' AND temp_id = ?`,
             [errorMessage, localId]
         );
     },

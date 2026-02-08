@@ -6,6 +6,8 @@ import { ArrowLeft, Save } from 'lucide-react-native';
 import { theme } from '../theme';
 import { clienteService } from '../services/clienteService';
 import { ClienteRequest, StatusCliente, TipoPessoa } from '../types';
+import { OfflineDebug } from '../utils/OfflineDebug';
+import { ClienteModel } from '../services/database/models/ClienteModel';
 
 export const ClientFormScreen = () => {
     const navigation = useNavigation();
@@ -14,6 +16,7 @@ export const ClientFormScreen = () => {
 
     const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
+    const [isOfflineMode, setIsOfflineMode] = useState(false);
 
     // Form State
     const [formData, setFormData] = useState<ClienteRequest>({
@@ -45,26 +48,62 @@ export const ClientFormScreen = () => {
     const loadCliente = async (id: number) => {
         try {
             setLoading(true);
-            const data = await clienteService.getById(id);
-            setFormData({
-                razaoSocial: data.razaoSocial || '',
-                nomeFantasia: data.nomeFantasia || '',
-                cnpj: data.cnpj || '',
-                cpf: data.cpf || '',
-                tipoPessoa: data.tipoPessoa || 'JURIDICA',
-                endereco: data.endereco || '',
-                contato: data.contato || '',
-                email: data.email || '',
-                status: data.status || 'ATIVO',
-                cep: data.cep || '',
-                logradouro: data.logradouro || '',
-                numero: data.numero || '',
-                complemento: data.complemento || '',
-                bairro: data.bairro || '',
-                cidade: data.cidade || '',
-                estado: data.estado || '',
-            });
+
+            // 🔧 OFFLINE FIRST: Buscar do banco local primeiro
+            console.log(`[ClientForm] Loading cliente ${id} - checking local DB first`);
+            const localCliente = await ClienteModel.getByServerId(id);
+
+            if (localCliente) {
+                console.log('[ClientForm] Found in local DB, using local data');
+                const formattedData = ClienteModel.toApiFormat(localCliente);
+                setFormData({
+                    razaoSocial: formattedData.razaoSocial || '',
+                    nomeFantasia: formattedData.nomeFantasia || '',
+                    cnpj: formattedData.cnpj || '',
+                    cpf: formattedData.cpf || '',
+                    tipoPessoa: formattedData.tipoPessoa || 'JURIDICA',
+                    endereco: formattedData.logradouro || '', // Usar logradouro como fallback
+                    contato: formattedData.contato || '',
+                    email: formattedData.email || '',
+                    status: formattedData.status || 'ATIVO',
+                    cep: formattedData.cep || '',
+                    logradouro: formattedData.logradouro || '',
+                    numero: formattedData.numero || '',
+                    complemento: formattedData.complemento || '',
+                    bairro: formattedData.bairro || '',
+                    cidade: formattedData.cidade || '',
+                    estado: formattedData.estado || '',
+                });
+                return;
+            }
+
+            // Se não encontrou local E está online, buscar da API
+            if (!OfflineDebug.isForceOffline()) {
+                console.log('[ClientForm] Not found locally, fetching from API');
+                const data = await clienteService.getById(id);
+                setFormData({
+                    razaoSocial: data.razaoSocial || '',
+                    nomeFantasia: data.nomeFantasia || '',
+                    cnpj: data.cnpj || '',
+                    cpf: data.cpf || '',
+                    tipoPessoa: data.tipoPessoa || 'JURIDICA',
+                    endereco: data.endereco || '',
+                    contato: data.contato || '',
+                    email: data.email || '',
+                    status: data.status || 'ATIVO',
+                    cep: data.cep || '',
+                    logradouro: data.logradouro || '',
+                    numero: data.numero || '',
+                    complemento: data.complemento || '',
+                    bairro: data.bairro || '',
+                    cidade: data.cidade || '',
+                    estado: data.estado || '',
+                });
+            } else {
+                throw new Error('Cliente não encontrado no banco local e modo offline ativo');
+            }
         } catch (error) {
+            console.error('[ClientForm] Error loading cliente:', error);
             Alert.alert('Erro', 'Não foi possível carregar os dados do cliente.');
             navigation.goBack();
         } finally {
@@ -84,20 +123,54 @@ export const ClientFormScreen = () => {
 
         try {
             setSaving(true);
+
+            const isOffline = OfflineDebug.isForceOffline();
+
             if (clienteId) {
                 await clienteService.update(clienteId, formData);
-                Alert.alert('Sucesso', 'Cliente atualizado com sucesso!');
+
+                if (isOffline) {
+                    Alert.alert(
+                        '✅ Salvo Localmente!',
+                        'Cliente atualizado no dispositivo. Será sincronizado quando voltar online.',
+                        [{ text: 'OK', onPress: () => navigation.goBack() }]
+                    );
+                } else {
+                    Alert.alert(
+                        'Sucesso',
+                        'Cliente atualizado com sucesso!',
+                        [{ text: 'OK', onPress: () => navigation.goBack() }]
+                    );
+                }
             } else {
                 await clienteService.create(formData);
-                Alert.alert('Sucesso', 'Cliente cadastrado com sucesso!');
+
+                if (isOffline) {
+                    Alert.alert(
+                        '✅ Salvo Localmente!',
+                        'Cliente cadastrado no dispositivo. Será sincronizado quando voltar online.',
+                        [{ text: 'OK', onPress: () => navigation.goBack() }]
+                    );
+                } else {
+                    Alert.alert(
+                        'Sucesso',
+                        'Cliente cadastrado com sucesso!',
+                        [{ text: 'OK', onPress: () => navigation.goBack() }]
+                    );
+                }
             }
-            navigation.goBack();
         } catch (error) {
-            console.error(error);
-            Alert.alert('Erro', 'Ocorreu um erro ao salvar o cliente.');
+            console.error('[ClientForm] Error saving:', error);
+            Alert.alert('Erro', 'Ocorreu um erro ao salvar o cliente. Verifique os dados e tente novamente.');
         } finally {
             setSaving(false);
         }
+    };
+
+    const toggleOfflineMode = () => {
+        const newMode = !isOfflineMode;
+        setIsOfflineMode(newMode);
+        OfflineDebug.setForceOffline(newMode);
     };
 
     if (loading) {
@@ -124,19 +197,39 @@ export const ClientFormScreen = () => {
                     borderBottomColor: theme.colors.border,
                 }}
             >
-                <TouchableOpacity onPress={() => navigation.goBack()} style={{ padding: 8 }}>
-                    <ArrowLeft size={24} color={theme.colors.text} />
-                </TouchableOpacity>
-                <Text style={{ color: theme.colors.text, fontSize: 18, fontWeight: '700' }}>
-                    {clienteId ? 'Editar Cliente' : 'Novo Cliente'}
-                </Text>
-                <TouchableOpacity onPress={handleSave} disabled={saving} style={{ padding: 8 }}>
-                    {saving ? (
-                        <ActivityIndicator size="small" color={theme.colors.primary} />
-                    ) : (
-                        <Save size={24} color={theme.colors.primary} />
-                    )}
-                </TouchableOpacity>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                    <TouchableOpacity onPress={() => navigation.goBack()} style={{ padding: 8 }}>
+                        <ArrowLeft size={24} color={theme.colors.text} />
+                    </TouchableOpacity>
+                    <Text style={{ color: theme.colors.text, fontSize: 18, fontWeight: '700', flex: 1 }}>
+                        {clienteId ? 'Editar Cliente' : 'Novo Cliente'}
+                    </Text>
+
+                    {/* 🔧 DEBUG: Botão offline */}
+                    <TouchableOpacity
+                        onPress={toggleOfflineMode}
+                        style={{
+                            backgroundColor: isOfflineMode ? '#EF4444' : '#10B981',
+                            paddingHorizontal: 10,
+                            paddingVertical: 5,
+                            borderRadius: 6,
+                            borderWidth: 1,
+                            borderColor: '#000',
+                        }}
+                    >
+                        <Text style={{ color: '#FFF', fontSize: 10, fontWeight: '700' }}>
+                            {isOfflineMode ? '✈️ OFF' : '🌐 ON'}
+                        </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity onPress={handleSave} disabled={saving} style={{ padding: 8 }}>
+                        {saving ? (
+                            <ActivityIndicator size="small" color={theme.colors.primary} />
+                        ) : (
+                            <Save size={24} color={theme.colors.primary} />
+                        )}
+                    </TouchableOpacity>
+                </View>
             </View>
 
             <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>

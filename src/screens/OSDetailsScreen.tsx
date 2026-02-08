@@ -3,14 +3,15 @@ import { View, Text, ScrollView, TouchableOpacity, ActivityIndicator, Alert, Mod
 import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../navigation/types';
-import { ChevronLeft, Calendar, User, Car, Share2, CheckCircle, DollarSign, Wrench, Plus, Trash2, Ban, X, Edit2, Save } from 'lucide-react-native';
+import { ChevronLeft, Calendar, User, Car, Share2, CheckCircle, DollarSign, Wrench, Plus, Trash2, Ban, X, Edit2, Save, Search, AlertTriangle } from 'lucide-react-native';
+import Toast from 'react-native-toast-message';
 import { Picker } from '@react-native-picker/picker';
 import { osService } from '../services/osService';
 import { userService } from '../services/userService';
 import { OrdemServico, OSStatus, VeiculoOS, PecaOS, User as UserType } from '../types';
 import { theme } from '../theme';
 import { Card, OSStatusBadge } from '../components/ui';
-import { PlateInput } from '../components/forms/PlateInput';
+import { SimplePlateInput } from '../components/forms/SimplePlateInput';
 
 interface TipoPeca {
     id: number;
@@ -106,6 +107,25 @@ export const OSDetailsScreen = () => {
     };
 
     const handleUpdateStatus = async (newStatus: OSStatus) => {
+        // Validação: Não permitir iniciar sem responsável
+        if (newStatus === 'EM_EXECUCAO' && !os?.usuarioId) {
+            Alert.alert(
+                'Atenção',
+                'Para iniciar a OS, é necessário definir um Responsável Técnico.',
+                [
+                    { text: 'Cancelar', style: 'cancel' },
+                    {
+                        text: 'Definir Agora',
+                        onPress: () => {
+                            setIsEditingUser(true);
+                            if (users.length > 0) setSelectedUserId(users[0].id); // Default to first user if none selected
+                        }
+                    }
+                ]
+            );
+            return;
+        }
+
         try {
             setUpdating(true);
             await osService.updateStatus(osId, newStatus);
@@ -128,54 +148,55 @@ export const OSDetailsScreen = () => {
 
     const handleCheckPlate = async () => {
         const placaLimpa = veiculoForm.placa.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
-        console.log('[OSDetails] handleCheckPlate called, placa:', placaLimpa);
+        if (placaLimpa.length < 3) {
+            Alert.alert('Atenção', 'Digite pelo menos 3 caracteres.');
+            return;
+        }
 
-        if (placaLimpa.length >= 7) {
-            try {
-                console.log('[OSDetails] Checking plate with API...');
-                const check = await osService.verificarPlaca(placaLimpa);
-                console.log('[OSDetails] API response:', JSON.stringify(check));
-
-                if (check.existe && check.veiculoExistente) {
-                    // Show alert asking if user wants to continue and auto-fill
-                    Alert.alert(
-                        'Veículo Já Cadastrado',
-                        `Este veículo já possui serviços anteriores:\n\n${check.veiculoExistente.modelo} - ${check.veiculoExistente.cor}\n\nDeseja continuar e usar os dados existentes?`,
-                        [
-                            {
-                                text: 'Cancelar',
-                                style: 'cancel',
-                                onPress: () => {
-                                    setVeiculoForm({ placa: '', modelo: '', cor: '' });
-                                    setPlateChecked(false);
-                                },
-                            },
-                            {
-                                text: 'Sim, Continuar',
-                                onPress: () => {
-                                    // Auto-fill with existing data
-                                    setVeiculoForm({
+        setUpdating(true);
+        try {
+            const check = await osService.verificarPlaca(placaLimpa);
+            if (check.existe && check.veiculoExistente) {
+                Alert.alert(
+                    'Veículo Encontrado',
+                    `Modelo: ${check.veiculoExistente.modelo}\nCor: ${check.veiculoExistente.cor}\n\nDeseja carregar estes dados e adicionar à OS?`,
+                    [
+                        { text: 'Não', style: 'cancel' },
+                        {
+                            text: 'Sim, Adicionar',
+                            onPress: async () => {
+                                try {
+                                    setUpdating(true);
+                                    await osService.addVeiculo({
+                                        ordemServicoId: osId,
                                         placa: placaLimpa,
-                                        modelo: check.veiculoExistente.modelo,
-                                        cor: check.veiculoExistente.cor,
+                                        modelo: check.veiculoExistente!.modelo || '',
+                                        cor: check.veiculoExistente!.cor || '',
                                     });
-                                    setExistingVehicle(check.veiculoExistente);
-                                    setPlateChecked(true);
-                                },
-                            },
-                        ]
-                    );
-                } else {
-                    console.log('[OSDetails] Plate not found in system');
-                    setPlateChecked(true);
-                    setExistingVehicle(null);
-                }
-            } catch (error) {
-                console.error('[OSDetails] Error checking plate:', error);
+                                    setVeiculoModal(false);
+                                    setVeiculoForm({ placa: '', modelo: '', cor: '' });
+                                    fetchDetails();
+                                } catch (e) {
+                                    Alert.alert('Erro', 'Não foi possível adicionar o veículo.');
+                                } finally {
+                                    setUpdating(false);
+                                }
+                            }
+                        }
+                    ]
+                );
+            } else {
+                Toast.show({
+                    type: 'info',
+                    text1: 'Veículo Novo',
+                    text2: 'Preencha os dados manualmente.',
+                });
                 setPlateChecked(true);
             }
-        } else {
-            console.log('[OSDetails] Plate too short:', placaLimpa.length);
+        } catch (error) {
+            console.error(error);
+        } finally {
+            setUpdating(false);
         }
     };
 
@@ -680,11 +701,15 @@ export const OSDetailsScreen = () => {
                             </TouchableOpacity>
                         </View>
 
-                        <PlateInput
-                            value={veiculoForm.placa}
-                            onChange={(val) => setVeiculoForm({ ...veiculoForm, placa: val })}
-                            onBlur={handleCheckPlate}
-                        />
+                        <View style={{ marginBottom: 16 }}>
+                            <SimplePlateInput
+                                value={veiculoForm.placa}
+                                onChange={(val) => setVeiculoForm({ ...veiculoForm, placa: val })}
+                                onSearch={handleCheckPlate}
+                                isSearching={updating}
+                                buttonLabel="VERIFICAR PLACA"
+                            />
+                        </View>
                         {existingVehicle && (
                             <Text style={{ color: theme.colors.warning, fontSize: 10, marginBottom: 16, textAlign: 'center' }}>
                                 ⚠️ Dados preenchidos automaticamente de serviço anterior
