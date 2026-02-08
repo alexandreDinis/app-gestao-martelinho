@@ -169,7 +169,10 @@ export const ClienteModel = {
                 } else {
                     console.log(`[ClienteModel] 🧟 Zombie detected! Status ${existing.sync_status} but not in Queue (or Dead). Overwriting with Server data.`);
                 }
+            } else {
+                console.log(`[ClienteModel] 🔄 Updating SYNCED client ${existing.local_id} (ID: ${existing.id}) with server data.`);
             }
+
 
             // console.log(`[ClienteModel] Sobrescrevendo cliente ${existing.id} com dados do servidor`);
 

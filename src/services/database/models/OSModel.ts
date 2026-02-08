@@ -494,6 +494,18 @@ export const OSModel = {
             if (clienteLocal) {
                 clienteId = clienteLocal.id;
                 clienteLocalId = clienteLocal.local_id;
+                console.log(`[OSModel] 🔗 Resolved Cliente Local ID: ${clienteId} (Server ID: ${os.cliente.id})`);
+            } else {
+                console.warn(`[OSModel] ⚠️ ClienteModel.upsertFromServer returned null for Server ID ${os.cliente.id}`);
+            }
+        } else if ((os as any).clienteId && !clienteId) {
+            // Fallback: se veio apenas o ID do cliente mas não o objeto (payload parcial)
+            const cid = (os as any).clienteId;
+            const clienteLocal = await ClienteModel.getByServerId(cid);
+            if (clienteLocal) {
+                clienteId = clienteLocal.id;
+                clienteLocalId = clienteLocal.local_id;
+                console.log(`[OSModel] 🔗 Resolved Cliente Local ID via clienteId: ${clienteId} (Server ID: ${cid})`);
             }
         }
 

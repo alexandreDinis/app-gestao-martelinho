@@ -23,6 +23,13 @@ export const ClientesScreen = () => {
         try {
             // Offline First: Ler do banco local
             const localData = await ClienteModel.getAll();
+
+            // 🔍 DIAGNOSTIC LOGS (Requested by User)
+            const total = localData.length;
+            const synced = localData.filter(c => c.sync_status === 'SYNCED').length;
+            const pending = localData.filter(c => c.sync_status && c.sync_status.startsWith('PENDING')).length;
+            console.log(`[ClientesScreen] 📊 DIAGNOSTICS: Loaded ${total} local clients. Synced: ${synced}, Pending: ${pending}`);
+
             const formattedData = localData.map(c => ClienteModel.toApiFormat(c));
             setClientes(formattedData);
         } catch (error) {

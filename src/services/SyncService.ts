@@ -84,29 +84,51 @@ export const SyncService = {
             await SecureStore.setItemAsync('has_forced_address_repair_v1', 'true');
         }
 
+        // TEMPORARY: Force full sync because backend 'updated_at' is unreliable for incremental sync
         const lastSync = await SecureStore.getItemAsync('last_sync_clientes');
+        // const lastSync = null;
         console.log(`📥 Baixando Clientes (Incremental)... Last: ${lastSync || 'NEVER'}`);
 
+        // Capture time BEFORE request to avoid missing items during processing
+        const syncStart = new Date().toISOString();
+
         try {
+            console.log(`[SyncService] Querying /clientes with since=${lastSync}`);
             const response = await api.get('/clientes', {
                 params: { since: lastSync }
             });
+            console.log(`[SyncService] Request URL: ${response.config.url} | Params:`, response.config.params);
 
-            const { data, deletedIds } = response.data;
+            // 🛡️ ROBUST RESPONSE HANDLING: Support multiple API formats (Array, Page, Wrapper)
+            const rawData = response.data;
+            const data =
+                Array.isArray(rawData) ? rawData :
+                    Array.isArray(rawData?.content) ? rawData.content :
+                        Array.isArray(rawData?.data) ? rawData.data :
+                            Array.isArray(rawData?.items) ? rawData.items :
+                                [];
 
-            if (data.length > 0 || deletedIds?.length > 0) {
+            const deletedIds = rawData?.deletedIds || [];
+
+            console.log(`[SyncService] /clientes response format check. Received ${data.length} items.`);
+
+            if (data.length > 0 || deletedIds.length > 0) {
                 await ClienteModel.upsertBatch(data);
 
                 // Process deletes if any
-                if (deletedIds?.length > 0) {
+                if (deletedIds.length > 0) {
                     // Implementar deleção lógica ou física se necessário
                     // await ClienteModel.deleteBatch(deletedIds);
                 }
 
-                // Salvar novo timestamp
-                await SecureStore.setItemAsync('last_sync_clientes', new Date().toISOString());
+                // Salvar novo timestamp (Start time of this sync)
+                await SecureStore.setItemAsync('last_sync_clientes', syncStart);
                 console.log(`✅ Clientes sincronizados: ${data.length} novos/atualizados`);
             } else {
+                // Even if no data, update timestamp to avoid re-querying old window repeatedly?
+                // Actually, if no data, we can still update to syncStart, ensuring we cover the window.
+                // But better to update only on success.
+                await SecureStore.setItemAsync('last_sync_clientes', syncStart);
                 console.log('✅ Clientes já atualizados.');
             }
         } catch (error) {
@@ -481,6 +503,10 @@ export const SyncService = {
     async syncOS(): Promise<void> {
         console.log('📥 Baixando Ordens de Serviço (Incremental)...');
         const lastSync = await SecureStore.getItemAsync('last_sync_os');
+
+        // Capture time BEFORE request
+        const syncStart = new Date().toISOString();
+
         const osService = (await import('./osService')).osService;
         const osList = await osService.listOS(lastSync || undefined);
 
@@ -491,7 +517,7 @@ export const SyncService = {
             console.log('ℹ️ Nenhuma OS nova/alterada.');
         }
 
-        await SecureStore.setItemAsync('last_sync_os', new Date().toISOString());
+        await SecureStore.setItemAsync('last_sync_os', syncStart);
     },
 
     async syncDespesas(): Promise<void> {
