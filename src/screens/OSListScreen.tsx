@@ -58,7 +58,7 @@ export const OSListScreen = () => {
     const handleRefresh = async () => {
         setLoading(true);
         try {
-            await SyncService.syncAll(true);
+            await SyncService.syncAll(true, 'OSListScreen.refresh');
             await fetchOrdens();
         } catch (error) {
             console.error('Sync failed:', error);

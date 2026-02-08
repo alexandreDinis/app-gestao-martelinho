@@ -47,9 +47,10 @@ class SyncEngine {
 
         console.log(`[SyncEngine] Initialized. Online: ${this.isOnline}`);
 
-        // Se online, tentar sincronizar
+        // Se online, tentar sincronizar (Bootstrap ou Check)
         if (this.isOnline) {
-            this.trySyncInBackground();
+            const { SyncService } = require('../SyncService');
+            SyncService.tryBootSync(this.isOnline).catch((err: any) => console.error(err));
         }
     }
 
@@ -62,10 +63,11 @@ class SyncEngine {
 
         console.log(`[SyncEngine] Network changed: ${wasOnline} -> ${this.isOnline}`);
 
-        // Se voltou online, tentar sincronizar
+        // Se voltou online, tentar sincronizar (Bootstrap ou Check)
         if (!wasOnline && this.isOnline) {
-            console.log('[SyncEngine] Back online! Starting sync...');
-            this.trySyncInBackground();
+            console.log('[SyncEngine] Back online! Checking updates...');
+            const { SyncService } = require('../SyncService');
+            SyncService.tryBootSync(this.isOnline).catch((err: any) => console.error(err));
         }
 
         this.notifyListeners();

@@ -4,6 +4,7 @@ import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../contexts/AuthContext';
 import { LogOut, Plus, Users, Search, Wrench, CheckCircle, Car, Package, Activity, DollarSign, FileText } from 'lucide-react-native';
 import { osService } from '../services/osService';
+import * as SecureStore from 'expo-secure-store';
 import { OrdemServico } from '../types';
 import { theme } from '../theme';
 import { Card } from '../components/ui';
@@ -26,10 +27,85 @@ export const DashboardScreen = () => {
     const [osList, setOsList] = useState<OrdemServico[]>([]);
     const [refreshing, setRefreshing] = useState(false);
 
-    const fetchData = async () => {
+    // Sync State
+    const [pendingCount, setPendingCount] = useState(0);
+    const [hasServerUpdates, setHasServerUpdates] = useState(false);
+    const [isSyncing, setIsSyncing] = useState(false);
+
+    const checkUpdates = async (force = false, caller = 'Dashboard') => {
         try {
+            const { SyncService } = await import('../services/SyncService');
+            const [pending, updates] = await Promise.all([
+                SyncService.getLocalPendingCount(),
+                SyncService.checkForUpdates(force, caller)
+            ]);
+            setPendingCount(pending);
+            setHasServerUpdates(updates.hasServerUpdates);
+        } catch (error) {
+            console.error('Failed to check updates:', error);
+        }
+    };
+
+    const checkFirstAccess = async () => {
+        try {
+            const { OSModel } = await import('../services/database/models/OSModel');
+            const lastSync = await SecureStore.getItemAsync('last_full_sync_at');
+            const count = await OSModel.getCount();
+
+            if (!lastSync || count === 0) {
+                setAlertConfig({
+                    visible: true,
+                    title: 'INICIALIZAÇÃO DO SISTEMA',
+                    message: 'Detectamos que esta é sua primeira sessão ou o banco de dados foi resetado.\n\n• É necessário realizar a primeira sincronia para baixar seus dados.\n• O sistema monitora o servidor e avisará se houver atualizações.\n• Caso realize alterações offline, lembre-se de sincronizar assim que recuperar a conexão.',
+                    type: 'info',
+                    actions: [{ text: 'ENTENDI', onPress: () => setAlertConfig({ visible: false }) }]
+                });
+            }
+        } catch (e) {
+            console.error('First access check failed', e);
+        }
+    };
+
+    const handleSync = async () => {
+        setIsSyncing(true);
+        try {
+            const { SyncService } = await import('../services/SyncService');
+            const netInfo = await (await import('@react-native-community/netinfo')).default.fetch();
+
+            await SyncService.syncAll(!!netInfo.isConnected, 'Dashboard.manual');
+
+            // Re-check after sync
+            await checkUpdates(true, 'Dashboard.manual');
+            await fetchData(true, 'Dashboard.manual'); // Refresh local list
+
+            setAlertConfig({
+                visible: true,
+                title: 'SINCRONIZAÇÃO CONCLUÍDA',
+                message: 'Seus dados estão atualizados com o servidor.',
+                type: 'success',
+                actions: [{ text: 'OK', onPress: () => setAlertConfig({ visible: false }) }]
+            });
+        } catch (error) {
+            setAlertConfig({
+                visible: true,
+                title: 'ERRO NA SINCRONIZAÇÃO',
+                message: 'Não foi possível completar a sincronização. Tente novamente.',
+                type: 'error',
+                actions: [{ text: 'OK', onPress: () => setAlertConfig({ visible: false }) }]
+            });
+        } finally {
+            setIsSyncing(false);
+        }
+    };
+
+    const fetchData = async (force = false, caller = 'Dashboard') => {
+        try {
+            // Read-only local fetch (instant)
             const data = await osService.listOS();
             setOsList(data);
+
+            // Check for updates (throttled by default, forced on refresh)
+            checkUpdates(force, caller);
         } catch (error) {
             console.error('Failed to load OS:', error);
         } finally {
@@ -39,14 +115,17 @@ export const DashboardScreen = () => {
 
     useFocusEffect(
         useCallback(() => {
-            fetchData();
+            fetchData(false, 'Dashboard.focus'); // Normal navigation = throttle check
+            checkFirstAccess();
         }, [])
     );
 
     const onRefresh = () => {
         setRefreshing(true);
-        fetchData();
+        fetchData(true, 'Dashboard.refresh'); // Pull to refresh = force check
     };
+
+
 
     // Plate search handler
     const handlePlateSearch = async () => {
@@ -173,6 +252,63 @@ export const DashboardScreen = () => {
                     <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.colors.primary} />
                 }
             >
+                {/* Sync Status Card */}
+                <Card style={{ marginBottom: 16 }} padding="md">
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <View>
+                            <Text style={{ color: theme.colors.primary, fontSize: 12, fontWeight: '900', fontStyle: 'italic', marginBottom: 4 }}>
+                                STATUS DE SINCRONIZAÇÃO
+                            </Text>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                                {isSyncing ? (
+                                    <Text style={{ color: theme.colors.textMuted, fontSize: 10 }}>Sincronizando...</Text>
+                                ) : pendingCount > 0 ? (
+                                    <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(239, 68, 68, 0.2)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
+                                        <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: theme.colors.error, marginRight: 4 }} />
+                                        <Text style={{ color: theme.colors.error, fontSize: 10, fontWeight: '700' }}>{pendingCount} PENDÊNCIAS</Text>
+                                    </View>
+                                ) : hasServerUpdates ? (
+                                    <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(212, 175, 55, 0.2)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
+                                        <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: theme.colors.primary, marginRight: 4 }} />
+                                        <Text style={{ color: theme.colors.primary, fontSize: 10, fontWeight: '700' }}>ATUALIZAÇÕES DISPONÍVEIS</Text>
+                                    </View>
+                                ) : (
+                                    <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(34, 197, 94, 0.2)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
+                                        <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#22c55e', marginRight: 4 }} />
+                                        <Text style={{ color: '#22c55e', fontSize: 10, fontWeight: '700' }}>TUDO ATUALIZADO</Text>
+                                    </View>
+                                )}
+                            </View>
+                        </View>
+
+                        <TouchableOpacity
+                            onPress={handleSync}
+                            disabled={isSyncing}
+                            style={{
+                                backgroundColor: isSyncing ? theme.colors.background : theme.colors.primary,
+                                paddingHorizontal: 16,
+                                paddingVertical: 8,
+                                borderRadius: 4,
+                                borderWidth: 1,
+                                borderColor: theme.colors.primary,
+                                opacity: isSyncing ? 0.7 : 1,
+                                flexDirection: 'row',
+                                alignItems: 'center',
+                                gap: 6
+                            }}
+                        >
+                            {isSyncing ? (
+                                <Activity size={14} color={theme.colors.primary} />
+                            ) : (
+                                <View style={{ width: 0 }} /> // Spacer/Icon placeholder
+                            )}
+                            <Text style={{ color: isSyncing ? theme.colors.primary : '#000', fontWeight: '900', fontSize: 10 }}>
+                                {isSyncing ? 'SYNCING...' : 'SINCRONIZAR'}
+                            </Text>
+                        </TouchableOpacity>
+                    </View>
+                </Card>
+
                 {/* Quick Actions Card */}
                 <Card style={{ marginBottom: 16, position: 'relative' }}>
                     <View style={{ position: 'absolute', top: 8, right: 8 }}>

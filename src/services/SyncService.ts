@@ -1,7 +1,4 @@
 // Services removed to avoid circular dependencies
-// import { clienteService } from './clienteService';
-// import { osService } from './osService';
-// import { despesaService } from './despesaService';
 import { ClienteModel } from './database/models/ClienteModel';
 import { OSModel } from './database/models/OSModel';
 import { VeiculoModel } from './database/models/VeiculoModel';
@@ -9,46 +6,81 @@ import { PecaModel } from './database/models/PecaModel';
 import { DespesaModel } from './database/models/DespesaModel';
 import { SyncQueueModel } from './database/models/SyncQueueModel';
 import * as SecureStore from 'expo-secure-store';
-import { NetInfoState } from '@react-native-community/netinfo';
 import api from './api';
 
 export const SyncService = {
+    // --- MUTEX STATE ---
+    _syncPromise: null as Promise<void> | null,
+    _syncPending: false,
+
     /**
-     * Sincroniza tudo:
-     * 1. PUSH: Envia alterações locais para o servidor (CRÍTICO: Isso deve acontecer ANTES do Pull)
-     * 2. PULL: Baixa atualizações do servidor
+     * Executes a task exclusively (Mutex Coalesce Pattern).
      */
-    async syncAll(isConnected: boolean): Promise<void> {
+    async runExclusive(task: () => Promise<void>): Promise<void> {
+        if (this._syncPromise) {
+            console.log('⏳ Sync already in progress, marking partial as pending next run.');
+            this._syncPending = true;
+            return this._syncPromise;
+        }
+
+        this._syncPromise = (async () => {
+            do {
+                this._syncPending = false;
+                try {
+                    await task();
+                } catch (e) {
+                    console.error('❌ Error executing exclusive sync task:', e);
+                }
+            } while (this._syncPending);
+        })().finally(() => {
+            this._syncPromise = null;
+        });
+
+        return this._syncPromise;
+    },
+
+    /**
+     * Sincroniza tudo (SERIALIZED)
+     */
+    async syncAll(isConnected: boolean, caller = 'unknown'): Promise<void> {
+        if (!isConnected) return;
+        return this.runExclusive(() => this._syncAllNoLock(isConnected, caller));
+    },
+
+    async _syncAllNoLock(isConnected: boolean, caller: string): Promise<void> {
         if (!isConnected) return;
 
-        console.log('🔄 Iniciando Sincronização Completa...');
+        console.log(`🔄 Iniciando Sincronização Completa (Locked) [Caller: ${caller}]...`);
 
         try {
-            // 0. Recuperar itens falhos (Retry Strategy aggressively)
+            // 0. Retry Strategy
             await SyncQueueModel.retryAllFailed();
 
-            // 1. PUSH (Local -> Server)
-            await this.processQueue();
+            // 1. PUSH
+            await this._processQueueNoLock();
 
-            // 2. PULL (Server -> Local)
+            // 2. PULL Metadata
             try {
-                await this.syncMetadata(); // Users and Part Types FIRST
+                await this.syncMetadata();
             } catch (err) {
                 console.error('⚠️ Falha ao sincronizar metadados:', err);
             }
 
+            // 3. PULL Clientes
             try {
-                await this.syncClientes();
+                await this._syncClientesNoLock();
             } catch (err) {
                 console.error('⚠️ Falha ao sincronizar clientes:', err);
             }
 
+            // 4. PULL OS
             try {
-                await this.syncOS();
+                await this._syncOSNoLock();
             } catch (err) {
                 console.error('⚠️ Falha ao sincronizar OS:', err);
             }
 
+            // 5. PULL Despesas
             try {
                 await this.syncDespesas();
             } catch (err) {
@@ -71,12 +103,103 @@ export const SyncService = {
         }
     },
 
+    // --- In-flight Promises & Throttling ---
+    _checkForUpdatesPromise: null as Promise<{ hasServerUpdates: boolean; serverTime: string | null }> | null,
+    _lastCheckForUpdates: 0,
+
     /**
-     * Sincroniza Clientes (Incremental)
+     * Verifica se há atualizações no servidor (Lightweight Check)
      */
+    async checkForUpdates(force = false, caller = 'unknown'): Promise<{ hasServerUpdates: boolean; serverTime: string | null }> {
+        if (this._checkForUpdatesPromise) {
+            console.log(`[SyncService] checkForUpdates [Caller: ${caller}] - returning in-flight promise`);
+            return this._checkForUpdatesPromise;
+        }
+
+        const now = Date.now();
+        const THROTTLE_MS = 10 * 60 * 1000;
+        if (!force && this._lastCheckForUpdates > 0 && (now - this._lastCheckForUpdates < THROTTLE_MS)) {
+            console.log(`[SyncService] Check throttled [Caller: ${caller}]. Last check: ${((now - this._lastCheckForUpdates) / 1000).toFixed(0)}s ago.`);
+            return { hasServerUpdates: false, serverTime: null };
+        }
+
+        console.log(`[SyncService] Checking for updates [Caller: ${caller}]...`);
+
+        this._checkForUpdatesPromise = (async () => {
+            try {
+                // 🛡️ SANITY CHECK: Se o banco estiver vazio, força update
+                const localCount = await OSModel.getCount();
+                if (localCount === 0) {
+                    console.log(`[SyncService] ⚠️ Local DB is empty (OS=0). Forcing 'Updates Available'.`);
+                    return { hasServerUpdates: true, serverTime: null };
+                }
+
+                const response = await api.get('/sync/status');
+                const status = response.data;
+                this._lastCheckForUpdates = Date.now();
+
+                const lastSyncClientes = await SecureStore.getItemAsync('last_sync_clientes');
+                const lastSyncOS = await SecureStore.getItemAsync('last_sync_os');
+
+                let hasUpdates = false;
+
+                if (status.clientesUpdatedAtMax) {
+                    if (!lastSyncClientes) hasUpdates = true;
+                    else if (new Date(status.clientesUpdatedAtMax).getTime() > new Date(lastSyncClientes).getTime()) hasUpdates = true;
+                }
+
+                if (status.osUpdatedAtMax) {
+                    if (!lastSyncOS) hasUpdates = true;
+                    else if (new Date(status.osUpdatedAtMax).getTime() > new Date(lastSyncOS).getTime()) hasUpdates = true;
+                }
+
+                console.log(`[SyncService] Updates Available: ${hasUpdates}`);
+                return { hasServerUpdates: hasUpdates, serverTime: status.serverTime || null };
+            } catch (error) {
+                console.error('❌ Falha ao verificar atualizações:', error);
+                return { hasServerUpdates: false, serverTime: null };
+            } finally {
+                this._checkForUpdatesPromise = null;
+            }
+        })();
+
+        return this._checkForUpdatesPromise;
+    },
+
+    /**
+     * Boot Logic
+     */
+    async tryBootSync(isConnected: boolean): Promise<void> {
+        if (!isConnected) return;
+
+        const lastFullSync = await SecureStore.getItemAsync('last_full_sync_at');
+        const localCount = await OSModel.getCount();
+
+        if (!lastFullSync || localCount === 0) {
+            console.log(`🚀 BOOTSTRAP: Start full sync... (LastSync: ${!!lastFullSync}, Count: ${localCount})`);
+            await this.syncAll(true, 'SyncEngine.bootstrap');
+            await SecureStore.setItemAsync('last_full_sync_at', new Date().toISOString());
+        } else {
+            console.log('⚡ FAST BOOT: Checking updates only...');
+            await this.checkForUpdates(false, 'SyncEngine.boot');
+        }
+    },
+
+    async getLocalPendingCount(): Promise<number> {
+        try {
+            const counts = await SyncQueueModel.getCounts();
+            return counts.total;
+        } catch (error) {
+            console.error('❌ Erro ao obter contagem pendente:', error);
+            return 0;
+        }
+    },
+
     async syncClientes(): Promise<void> {
-        // 🛡️ REPAIR MAGIC: Forçar re-sync se o usuário estiver com problemas de endereço null
-        // Isso roda uma vez e depois o SecureStore garante que não roda mais (a menos que apaguem o dado)
+        return this.runExclusive(() => this._syncClientesNoLock());
+    },
+
+    async _syncClientesNoLock(): Promise<void> {
         const hasForcedRepair = await SecureStore.getItemAsync('has_forced_address_repair_v1');
         if (!hasForcedRepair) {
             console.log('🧹 REPAIR: Forçando re-sync de clientes para corrigir endereços nulos...');
@@ -84,460 +207,288 @@ export const SyncService = {
             await SecureStore.setItemAsync('has_forced_address_repair_v1', 'true');
         }
 
-        // TEMPORARY: Force full sync because backend 'updated_at' is unreliable for incremental sync
         const lastSync = await SecureStore.getItemAsync('last_sync_clientes');
-        // const lastSync = null;
-        console.log(`📥 Baixando Clientes (Incremental)... Last: ${lastSync || 'NEVER'}`);
-
-        // Capture time BEFORE request to avoid missing items during processing
         const syncStart = new Date().toISOString();
 
         try {
-            console.log(`[SyncService] Querying /clientes with since=${lastSync}`);
-            const response = await api.get('/clientes', {
-                params: { since: lastSync }
-            });
-            console.log(`[SyncService] Request URL: ${response.config.url} | Params:`, response.config.params);
-
-            // 🛡️ ROBUST RESPONSE HANDLING: Support multiple API formats (Array, Page, Wrapper)
+            const response = await api.get('/clientes', { params: { since: lastSync } });
             const rawData = response.data;
-            const data =
-                Array.isArray(rawData) ? rawData :
-                    Array.isArray(rawData?.content) ? rawData.content :
-                        Array.isArray(rawData?.data) ? rawData.data :
-                            Array.isArray(rawData?.items) ? rawData.items :
-                                [];
+            const data = Array.isArray(rawData) ? rawData : (rawData?.content || rawData?.data || rawData?.items || []);
 
-            const deletedIds = rawData?.deletedIds || [];
-
-            console.log(`[SyncService] /clientes response format check. Received ${data.length} items.`);
-
-            if (data.length > 0 || deletedIds.length > 0) {
+            if (data.length > 0) {
                 await ClienteModel.upsertBatch(data);
-
-                // Process deletes if any
-                if (deletedIds.length > 0) {
-                    // Implementar deleção lógica ou física se necessário
-                    // await ClienteModel.deleteBatch(deletedIds);
-                }
-
-                // Salvar novo timestamp (Start time of this sync)
-                await SecureStore.setItemAsync('last_sync_clientes', syncStart);
                 console.log(`✅ Clientes sincronizados: ${data.length} novos/atualizados`);
-            } else {
-                // Even if no data, update timestamp to avoid re-querying old window repeatedly?
-                // Actually, if no data, we can still update to syncStart, ensuring we cover the window.
-                // But better to update only on success.
-                await SecureStore.setItemAsync('last_sync_clientes', syncStart);
-                console.log('✅ Clientes já atualizados.');
             }
+            await SecureStore.setItemAsync('last_sync_clientes', syncStart);
         } catch (error) {
             console.error('❌ Erro ao baixar clientes:', error);
             throw error;
         }
     },
 
-
-    /**
-     * Processa a fila de sincronização (PUSH)
-     */
     async processQueue(): Promise<void> {
-        console.log('📤 Processando fila de sincronização...');
+        return this.runExclusive(() => this._processQueueNoLock());
+    },
 
-        let pendingItem = await SyncQueueModel.getNextPending();
+    async _processQueueNoLock(): Promise<void> {
+        console.log('📤 Processando fila de sincronização (Robust Sync V2)...');
 
-        while (pendingItem) {
-            console.log(`🔄 Processando item: ${pendingItem.entity_type} - ${pendingItem.operation} (ID: ${pendingItem.id}, tentativa ${pendingItem.attempts + 1})`);
+        // 1. Fetch All Pending Items
+        const pendingItems = await SyncQueueModel.getAllPending();
+        if (pendingItems.length === 0) {
+            console.log('✅ Fila vazia.');
+            return;
+        }
+
+        console.log(`📋 Itens pendentes: ${pendingItems.length}`);
+
+        // 2. Sort by Priority (Phase-Based)
+        // Order: CLIENTE (0) > OS (1) > VEICULO (2) > PECA (3) > DESPESA (4)
+        const PRIORITY_MAP: Record<string, number> = {
+            'cliente': 0,
+            'os': 1,
+            'veiculo': 2,
+            'peca': 3,
+            'despesa': 4
+        };
+
+        const sortedItems = pendingItems.sort((a, b) => {
+            const pA = PRIORITY_MAP[a.entity_type] ?? 99;
+            const pB = PRIORITY_MAP[b.entity_type] ?? 99;
+            if (pA !== pB) return pA - pB;
+            return a.created_at - b.created_at; // FIFO within same type
+        });
+
+        // 3. Process Loop
+        for (const item of sortedItems) {
+            // 3.1 Check Backoff
+            if (item.attempts > 0 && item.last_attempt) {
+                const backoffMs = this.calculateBackoff(item.attempts);
+                const nextRetry = item.last_attempt + backoffMs;
+                if (Date.now() < nextRetry) {
+                    console.log(`⏳ Skipping item ${item.id} (Backoff). Retry in ${((nextRetry - Date.now()) / 1000).toFixed(0)}s`);
+                    continue;
+                }
+            }
 
             try {
-                const payload = pendingItem.payload ? JSON.parse(pendingItem.payload) : null;
+                const payload = item.payload ? JSON.parse(item.payload) : null;
+
+                // 3.2 Check Dependencies (Parent Existence)
+                const isReady = await this.checkDependencies(item, payload);
+                if (!isReady) {
+                    // Dep not ready? Skip silently (wait for next sync cycle where parent might be synced)
+                    console.log(`⏸️ Skipping item ${item.id} (Dependency not ready)`);
+                    continue;
+                }
+
                 let serverId: number | null = null;
+                console.log(`🔄 Processing ${item.entity_type} ${item.operation} (ID: ${item.id})...`);
 
-                // Executar chamada de API baseada no recurso e ação
-                if (pendingItem.entity_type === 'cliente') {
-                    serverId = await this.syncClienteItem(pendingItem.operation, pendingItem.entity_local_id, payload);
-
-                    // CRÍTICO: Se criou sucesso, atualizar ID local imediatamente
-                    if (pendingItem.operation === 'CREATE' && serverId) {
-                        console.log(`✅ Cliente sincronizado: UUID ${pendingItem.entity_local_id} → ID ${serverId}`);
-                        await ClienteModel.markAsSynced(pendingItem.entity_local_id, serverId);
-                    }
-                }
-                else if (pendingItem.entity_type === 'os') {
-                    serverId = await this.syncOSItem(pendingItem.operation, pendingItem.entity_local_id, payload);
-
-                    if (pendingItem.operation === 'CREATE' && serverId) {
-                        console.log(`✅ OS sincronizada: UUID ${pendingItem.entity_local_id} → ID ${serverId}`);
-                        await OSModel.markAsSynced(pendingItem.entity_local_id, serverId);
-                    }
-                }
-                else if (pendingItem.entity_type === 'veiculo') {
-                    serverId = await this.syncVeiculoItem(pendingItem.operation, pendingItem.entity_local_id, payload);
-
-                    if (pendingItem.operation === 'CREATE' && serverId) {
-                        console.log(`✅ Veículo sincronizado: UUID ${pendingItem.entity_local_id} → ID ${serverId}`);
-                        await VeiculoModel.markAsSynced(pendingItem.entity_local_id, serverId);
-                    }
-                }
-                else if (pendingItem.entity_type === 'peca') {
-                    serverId = await this.syncPecaItem(pendingItem.operation, pendingItem.entity_local_id, payload);
-
-                    if (pendingItem.operation === 'CREATE' && serverId) {
-                        console.log(`✅ Peça sincronizada: UUID ${pendingItem.entity_local_id} → ID ${serverId}`);
-                        await PecaModel.markAsSynced(pendingItem.entity_local_id, serverId);
-                    }
-                }
-                else if (pendingItem.entity_type === 'despesa') {
-                    serverId = await this.syncDespesaItem(pendingItem.operation, pendingItem.entity_local_id, payload);
-
-                    if (pendingItem.operation === 'CREATE' && serverId) {
-                        console.log(`✅ Despesa sincronizada: UUID ${pendingItem.entity_local_id} → ID ${serverId}`);
-                        await DespesaModel.markAsSynced(pendingItem.entity_local_id, serverId);
-                    }
+                // 3.3 Execute
+                if (item.entity_type === 'cliente') {
+                    serverId = await this.syncClienteItem(item.operation, item.entity_local_id, payload);
+                } else if (item.entity_type === 'os') {
+                    serverId = await this.syncOSItem(item.operation, item.entity_local_id, payload);
+                } else if (item.entity_type === 'veiculo') {
+                    serverId = await this.syncVeiculoItem(item.operation, item.entity_local_id, payload);
+                } else if (item.entity_type === 'peca') {
+                    serverId = await this.syncPecaItem(item.operation, item.entity_local_id, payload);
+                } else if (item.entity_type === 'despesa') {
+                    serverId = await this.syncDespesaItem(item.operation, item.entity_local_id, payload);
                 }
 
-                // Se não foi CREATE (UPDATE/DELETE), apenas marca como processado/removido da fila
-                // Para CREATE, o markAsSynced já remove da fila
-                if (pendingItem.operation !== 'CREATE') {
-                    // CRÍTICO: Para UPDATE, precisamos atualizar o status local para SYNCED
-                    // caso contrário ele fica travado como PENDING_UPDATE e rejeita pulls futuros
-                    if (pendingItem.operation === 'UPDATE' && serverId) {
-                        if (pendingItem.entity_type === 'cliente') {
-                            await ClienteModel.markAsSynced(pendingItem.entity_local_id, serverId);
-                        } else if (pendingItem.entity_type === 'os') {
-                            await OSModel.markAsSynced(pendingItem.entity_local_id, serverId);
-                        } else if (pendingItem.entity_type === 'veiculo') {
-                            await VeiculoModel.markAsSynced(pendingItem.entity_local_id, serverId);
-                        } else if (pendingItem.entity_type === 'peca') {
-                            await PecaModel.markAsSynced(pendingItem.entity_local_id, serverId);
-                        } else if (pendingItem.entity_type === 'despesa') {
-                            await DespesaModel.markAsSynced(pendingItem.entity_local_id, serverId);
-                        }
-                    } else {
-                        // DELETE ou falha silenciosa em update (sem serverId?), apenas limpa fila
-                        await SyncQueueModel.markAsProcessed(pendingItem.id);
-                    }
+                // 3.4 Success Mapping
+                if (serverId) {
+                    console.log(`✅ Success ${item.entity_type} -> ServerID: ${serverId}`);
+                    await this.updateLocalEntityId(item.entity_type, item.entity_local_id, serverId);
+                    await SyncQueueModel.markAsProcessed(item.id);
+                } else {
+                    // Start DELETE operations or others that don't return ID
+                    await SyncQueueModel.markAsProcessed(item.id);
                 }
 
             } catch (error: any) {
-                const api = (await import('./api')).default;
-                const baseURL = api.defaults.baseURL;
-                console.error(`❌ Erro ao processar item ${pendingItem.id} [Resource: ${pendingItem.entity_type}]:`, {
-                    message: error.message,
-                    code: error.code,
-                    status: error.response?.status,
-                    baseURL: baseURL
-                });
-
-                // Detectar tipo de erro
+                console.error(`❌ Erro item ${item.id}:`, error.message);
                 const errorType = this.detectErrorType(error);
+                await SyncQueueModel.markAttempt(item.id, false, `${errorType}: ${error.message}`);
+            }
+        }
+    },
 
-                if (errorType === 'validation') {
-                    // Erro de validação - não retry, marcar como ERROR permanente
-                    console.error(`🚫 Erro de validação (permanente) para item ${pendingItem.id}:`, error.message);
-                    await SyncQueueModel.markAsError(pendingItem.id, `VALIDAÇÃO: ${error.message || 'Dados inválidos'}`);
-                } else {
-                    // Erro de rede - permitir retry
-                    console.warn(`🔄 Erro de rede para item ${pendingItem.id}, será retentado:`, error.message);
-                    await SyncQueueModel.markAsError(pendingItem.id, `REDE: ${error.message || 'Erro de conexão'}`);
+    calculateBackoff(attempts: number): number {
+        // 1: 2s, 2: 10s, 3: 60s, 4+: 10min
+        if (attempts <= 1) return 2000;
+        if (attempts === 2) return 10000;
+        if (attempts === 3) return 60000;
+        return 10 * 60 * 1000;
+    },
+
+    async checkDependencies(item: any, payload: any): Promise<boolean> {
+        // Rule: Child cannot be sent if Parent has no server_id
+        if (item.entity_type === 'veiculo' && item.operation === 'CREATE') {
+            // Check OS
+            // Payload might have osLocalId.
+            // If payload.ordemServicoId is set, it's fine.
+            // If not, we need to check if we can resolve it.
+            if (!payload.ordemServicoId && payload.osLocalId) {
+                const os = await OSModel.getByLocalId(payload.osLocalId);
+                if (!os || !os.server_id) {
+                    console.log(`   -> Missing Parent OS ServerID for Veiculo ${item.entity_local_id}`);
+                    return false;
                 }
             }
-
-            // Pegar próximo
-            pendingItem = await SyncQueueModel.getNextPending();
         }
+
+        if (item.entity_type === 'peca' && item.operation === 'CREATE') {
+            if (!payload.veiculoId && payload.veiculoLocalId) {
+                const v = await VeiculoModel.getByLocalId(payload.veiculoLocalId);
+                if (!v || !v.server_id) {
+                    console.log(`   -> Missing Parent Veiculo ServerID for Peca ${item.entity_local_id}`);
+                    return false;
+                }
+            }
+        }
+        return true;
     },
 
-    /**
-     * Detecta o tipo de erro para decidir se deve fazer retry
-     * @returns 'network' para erros de rede (retry), 'validation' para erros de validação (não retry)
-     */
+    async updateLocalEntityId(type: string, localId: string, serverId: number): Promise<void> {
+        if (type === 'cliente') await ClienteModel.markAsSynced(localId, serverId);
+        else if (type === 'os') await OSModel.markAsSynced(localId, serverId);
+        else if (type === 'veiculo') await VeiculoModel.markAsSynced(localId, serverId);
+        else if (type === 'peca') await PecaModel.markAsSynced(localId, serverId);
+        else if (type === 'despesa') await DespesaModel.markAsSynced(localId, serverId);
+    },
+
     detectErrorType(error: any): 'network' | 'validation' {
-        // Erros de rede (retry permitido)
-        const networkErrors = [
-            'ENOTFOUND', 'ECONNREFUSED', 'ETIMEDOUT', 'ECONNRESET',
-            'Network request failed', 'Network Error', 'timeout',
-            'ERR_NETWORK', 'ERR_CONNECTION_REFUSED'
-        ];
-
-        // Erros de validação (HTTP 400, 422, 409) - não retry
-        if (error.response) {
-            const status = error.response.status;
-            if (status === 400 || status === 422 || status === 409) {
-                return 'validation';
-            }
-        }
-
-        // Checar mensagem de erro
-        const errorMessage = error.message || error.toString();
-        for (const networkError of networkErrors) {
-            if (errorMessage.includes(networkError)) {
-                return 'network';
-            }
-        }
-
-        // Por padrão, tratar como erro de rede (permite retry)
-        return 'network';
+        const networkErrors = ['ENOTFOUND', 'ECONNREFUSED', 'ETIMEDOUT', 'ECONNRESET', 'Network request failed', 'Network Error', 'timeout', 'ERR_NETWORK', 'ERR_CONNECTION_REFUSED'];
+        if (error.response && [400, 422, 409].includes(error.response.status)) return 'validation';
+        const msg = (error.message || '').toString();
+        return networkErrors.some(ne => msg.includes(ne)) ? 'network' : 'network';
     },
-
-    // --- Helpers de Item Individual ---
 
     async syncClienteItem(action: string, localId: string, payload: any): Promise<number | null> {
-        console.log(`[SyncService] Syncing cliente: ${action}`, { localId });
-
         if (action === 'CREATE') {
-            // Chamar API diretamente (não usar clienteService.create que tem lógica offline)
-            console.log(`[SyncService] 📤 Enviando cliente para servidor:`, JSON.stringify(payload, null, 2));
-
-            try {
-                const api = (await import('./api')).default;
-                const response = await api.post('/clientes', {
-                    ...payload,
-                    localId: localId // 🆔 IMPORTANTE
-                });
-                console.log(`[SyncService] ✅ Cliente criado no servidor com ID ${response.data.id}`);
-                return response.data.id;
-            } catch (error: any) {
-                console.error(`[SyncService] ❌ Erro ao criar cliente:`, {
-                    status: error.response?.status,
-                    statusText: error.response?.statusText,
-                    serverError: error.response?.data,
-                    message: error.message,
-                    payload: payload
-                });
-                throw error;
-            }
+            const res = await api.post('/clientes', { ...payload, localId });
+            return res.data.id;
         } else if (action === 'UPDATE') {
-            // Precisamos do ID do servidor. O payload pode ter ou buscaremos pelo localId
-            const localCliente = await ClienteModel.getByLocalId(localId);
-            if (!localCliente?.server_id) throw new Error('Cliente sem server_id para update');
-
-            // Usar API direta para evitar loop com clienteService (que tem lógica offline)
-            const api = (await import('./api')).default;
-            await api.put(`/clientes/${localCliente.server_id}`, payload);
-            console.log(`[SyncService] ✅ Cliente atualizado no servidor: ID ${localCliente.server_id}`);
-
-            return localCliente.server_id;
-        } else if (action === 'DELETE') {
-            const localCliente = await ClienteModel.getByLocalId(localId);
-            if (localCliente?.server_id) {
-                // TODO: Implement delete method in clienteService
-                // await clienteService.delete(localCliente.server_id);
-                console.warn('Cliente delete not implemented in API service');
-            }
-            return null;
+            const local = await ClienteModel.getByLocalId(localId);
+            if (!local?.server_id) throw new Error('Cliente sem server_id');
+            await api.put(`/clientes/${local.server_id}`, payload);
+            return local.server_id;
         }
         return null;
     },
 
     async syncOSItem(action: string, localId: string, payload: any): Promise<number | null> {
-        console.log(`[SyncService] Syncing OS: ${action}`, { localId });
-
         if (action === 'CREATE') {
-            // 🆕 Resolve Client FK dynamically
             if (payload.clienteLocalId && (!payload.clienteId || payload.clienteId === 0)) {
                 const client = await ClienteModel.getByLocalId(payload.clienteLocalId);
-                if (client && client.server_id) {
-                    payload.clienteId = client.server_id;
-                    console.log(`[SyncService] 🔗 Resolved Cliente FK for OS: ${client.server_id}`);
-                } else {
-                    console.warn(`[SyncService] ⚠️ Could not resolve Cliente FK for OS ${localId}. Client might not be synced yet.`);
-                    throw new Error('Dependência de Cliente não satisfeita (sem server_id)');
-                }
+                if (client?.server_id) payload.clienteId = client.server_id;
+                else throw new Error('Dependência de Cliente não satisfeita');
             }
-
-            const api = (await import('./api')).default;
-            const response = await api.post('/ordens-servico', {
-                ...payload,
-                localId: localId // 🆔 IMPORTANTE
-            });
-            console.log(`[SyncService] OS created on server`, { serverId: response.data.id });
-            return response.data.id;
+            const res = await api.post('/ordens-servico', { ...payload, localId });
+            return res.data.id;
         } else if (action === 'UPDATE') {
-            const localOS = await OSModel.getByLocalId(localId);
-
-            if (!localOS) {
-                console.warn(`[SyncService] ⚠️ Local OS not found for update: ${localId}`);
-                return null;
-            }
-
-            if (!localOS.server_id) throw new Error('OS sem server_id para update');
-
-            const api = (await import('./api')).default;
-
+            const local = await OSModel.getByLocalId(localId);
+            if (!local?.server_id) throw new Error('OS sem server_id');
             if (payload.status && Object.keys(payload).length === 1) {
-                await api.patch(`/ordens-servico/${localOS.server_id}/status`, payload);
+                await api.patch(`/ordens-servico/${local.server_id}/status`, payload);
             } else {
-                const { id, sync_status, localId, ...cleanPayload } = payload;
-
-                if (cleanPayload.usuario_id !== undefined) {
-                    cleanPayload.usuarioId = cleanPayload.usuario_id;
-                    delete cleanPayload.usuario_id;
-                }
-                if (cleanPayload.usuario_nome !== undefined) {
-                    cleanPayload.usuarioNome = cleanPayload.usuario_nome;
-                    delete cleanPayload.usuario_nome;
-                }
-                if (cleanPayload.usuario_email !== undefined) {
-                    cleanPayload.usuarioEmail = cleanPayload.usuario_email;
-                    delete cleanPayload.usuario_email;
-                }
-
-                await api.patch(`/ordens-servico/${localOS.server_id}`, cleanPayload);
-                console.log(`[SyncService] ✅ OS atualizada no servidor (PATCH): ID ${localOS.server_id}`);
+                const { id, sync_status, localId: lid, ...clean } = payload;
+                if (clean.usuario_id !== undefined) { clean.usuarioId = clean.usuario_id; delete clean.usuario_id; }
+                await api.patch(`/ordens-servico/${local.server_id}`, clean);
             }
-            return localOS.server_id;
-        } else if (action === 'DELETE') {
-            const localOS = await OSModel.getByLocalId(localId);
-            if (localOS?.server_id) {
-                const api = (await import('./api')).default;
-                // await api.delete(`/ordens-servico/${localOS.server_id}`);
-            }
-            return null;
+            return local.server_id;
         }
         return null;
     },
 
     async syncVeiculoItem(action: string, localId: string, payload: any): Promise<number | null> {
-        console.log(`[SyncService] Syncing veículo: ${action}`, { localId });
-
         if (action === 'CREATE') {
-            // 🆕 Resolve OS FK dynamically
             if (payload.osLocalId && (!payload.ordemServicoId || payload.ordemServicoId === 0)) {
                 const os = await OSModel.getByLocalId(payload.osLocalId);
-                if (os && os.server_id) {
-                    payload.ordemServicoId = os.server_id;
-                    console.log(`[SyncService] 🔗 Resolved OS FK for Veiculo: ${os.server_id}`);
-                } else {
-                    console.warn(`[SyncService] ⚠️ Could not resolve OS FK for Veiculo ${localId}. OS might not be synced yet.`);
-                    throw new Error('Dependência de OS não satisfeita (sem server_id)');
-                }
+                if (os?.server_id) payload.ordemServicoId = os.server_id;
+                else throw new Error('Dependência de OS não satisfeita');
             }
-
-            const api = (await import('./api')).default;
-            const response = await api.post('/ordens-servico/veiculos', {
-                ...payload,
-                localId: localId // 🆔 IMPORTANTE
-            });
-            console.log(`[SyncService] Veículo created on server`, { serverId: response.data.id });
-            return response.data.id;
+            const res = await api.post('/ordens-servico/veiculos', { ...payload, localId });
+            return res.data.id;
         } else if (action === 'UPDATE') {
-            const localVeiculo = await VeiculoModel.getByLocalId(localId);
-            if (!localVeiculo?.server_id) throw new Error('Veículo sem server_id para update');
-
-            const api = (await import('./api')).default;
-            await api.patch(`/ordens-servico/veiculos/${localVeiculo.server_id}`, payload);
-            return localVeiculo.server_id;
-        } else if (action === 'DELETE') {
-            const api = (await import('./api')).default;
-            const VeiculoModel = (await import('./database/models/VeiculoModel')).VeiculoModel;
-            const item = await VeiculoModel.getByLocalId(localId);
-            if (item?.server_id) {
-                await api.delete(`/ordens-servico/veiculos/${item.server_id}`);
+            const local = await VeiculoModel.getByLocalId(localId);
+            if (local?.server_id) {
+                await api.patch(`/ordens-servico/veiculos/${local.server_id}`, payload);
+                return local.server_id;
             }
+        } else if (action === 'DELETE') {
+            const item = await VeiculoModel.getByLocalId(localId);
+            if (item?.server_id) await api.delete(`/ordens-servico/veiculos/${item.server_id}`);
         }
         return null;
     },
 
     async syncPecaItem(action: string, localId: string, payload: any): Promise<number | null> {
-        console.log(`[SyncService] Syncing peça: ${action}`, { localId });
-
         if (action === 'CREATE') {
-            // 🆕 Resolve Veiculo FK dynamically
             if (payload.veiculoLocalId && (!payload.veiculoId || payload.veiculoId === 0)) {
-                const veiculo = await VeiculoModel.getByLocalId(payload.veiculoLocalId);
-                if (veiculo && veiculo.server_id) {
-                    payload.veiculoId = veiculo.server_id;
-                    console.log(`[SyncService] 🔗 Resolved Veiculo FK for Peca: ${veiculo.server_id}`);
-                } else {
-                    console.warn(`[SyncService] ⚠️ Could not resolve Veiculo FK for Peca ${localId}. Veiculo might not be synced yet.`);
-                    throw new Error('Dependência de Veículo não satisfeita (sem server_id)');
-                }
+                const v = await VeiculoModel.getByLocalId(payload.veiculoLocalId);
+                if (v?.server_id) payload.veiculoId = v.server_id;
+                else throw new Error('Dependência de Veículo não satisfeita');
             }
-
-            const api = (await import('./api')).default;
-            const response = await api.post('/ordens-servico/pecas', {
-                ...payload,
-                localId: localId // 🆔 IMPORTANTE
-            });
-            console.log(`[SyncService] Peça created on server`, { serverId: response.data.id });
-            return response.data.id;
+            const res = await api.post('/ordens-servico/pecas', { ...payload, localId });
+            return res.data.id;
         } else if (action === 'UPDATE') {
-            const localPeca = await PecaModel.getByLocalId(localId);
-            if (!localPeca?.server_id) throw new Error('Peça sem server_id para update');
-
-            const api = (await import('./api')).default;
-            await api.patch(`/ordens-servico/pecas/${localPeca.server_id}`, payload);
-            return localPeca.server_id;
-        } else if (action === 'DELETE') {
-            const { PecaModel } = require('./database/models/PecaModel');
-            const item = await PecaModel.getByLocalId(localId);
-            if (item?.server_id) {
-                const api = (await import('./api')).default;
-                await api.delete(`/ordens-servico/pecas/${item.server_id}`);
+            const local = await PecaModel.getByLocalId(localId);
+            if (local?.server_id) {
+                await api.patch(`/ordens-servico/pecas/${local.server_id}`, payload);
+                return local.server_id;
             }
+        } else if (action === 'DELETE') {
+            const item = await PecaModel.getByLocalId(localId);
+            if (item?.server_id) await api.delete(`/ordens-servico/pecas/${item.server_id}`);
         }
         return null;
     },
 
     async syncDespesaItem(action: string, localId: string, payload: any): Promise<number | null> {
         if (action === 'CREATE') {
-            const despesaService = (await import('./despesaService')).despesaService;
+            const { despesaService } = await import('./despesaService');
             const created = await despesaService.create(payload);
             return created.id;
-        } else if (action === 'DELETE') {
-            const localDespesa = await DespesaModel.getByLocalId(localId);
-            if (localDespesa?.server_id) {
-                // await despesaService.delete(localDespesa.server_id);
-                console.warn('Despesa delete not implemented in API service');
-            }
-            return null;
         }
         return null;
     },
 
-    // --- Helpers de PULL ---
-
-    // syncClientes movido para cima
-
     async syncOS(): Promise<void> {
+        return this.runExclusive(() => this._syncOSNoLock());
+    },
+
+    async _syncOSNoLock(): Promise<void> {
         console.log('📥 Baixando Ordens de Serviço (Incremental)...');
         const lastSync = await SecureStore.getItemAsync('last_sync_os');
-
-        // Capture time BEFORE request
         const syncStart = new Date().toISOString();
-
-        const osService = (await import('./osService')).osService;
-        const osList = await osService.listOS(lastSync || undefined);
-
-        if (osList.length > 0) {
-            await OSModel.upsertBatch(osList);
-            console.log(`✅ ${osList.length} ordens de serviço sincronizadas.`);
-        } else {
-            console.log('ℹ️ Nenhuma OS nova/alterada.');
+        try {
+            const { osService } = await import('./osService');
+            const osList = await osService.fetchFromApi(lastSync || undefined);
+            if (osList.length > 0) {
+                await OSModel.upsertBatch(osList);
+                console.log(`✅ ${osList.length} ordens de serviço sincronizadas.`);
+            }
+            await SecureStore.setItemAsync('last_sync_os', syncStart);
+        } catch (error) {
+            console.error('❌ Erro ao sincronizar OS (Pull):', error);
         }
-
-        await SecureStore.setItemAsync('last_sync_os', syncStart);
     },
 
     async syncDespesas(): Promise<void> {
-        console.log('📥 Baixando Despesas...');
-        // const despesaService = (await import('./despesaService')).despesaService;
-        // const despesas = await despesaService.getAll();
-        // await DespesaModel.upsertBatch(despesas);
-        console.warn('Despesa sync not implemented - missing getAll method in despesaService');
+        console.warn('Despesa sync not implemented');
     },
 
     async syncUsers(): Promise<void> {
-        console.log('📥 Baixando Usuários...');
         const { userService } = await import('./userService');
-        await userService.getUsers(); // This already handles API fetch + DB upsert
+        await userService.getUsers();
     },
 
     async syncTiposPeca(): Promise<void> {
-        console.log('📥 Baixando Tipos de Peça...');
         const { osService } = await import('./osService');
-        await osService.listTiposPeca(); // This already handles API fetch + DB upsert
-        console.log('✅ Tipos de Peça sincronizados.');
+        await osService.listTiposPeca();
     }
 };

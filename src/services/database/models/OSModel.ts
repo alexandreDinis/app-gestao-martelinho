@@ -22,6 +22,14 @@ export const OSModel = {
     },
 
     /**
+     * Obter contagem total de OS
+     */
+    async getCount(): Promise<number> {
+        const result = await databaseService.getFirst<{ count: number }>(`SELECT COUNT(*) as count FROM ordens_servico`);
+        return result?.count || 0;
+    },
+
+    /**
      * Buscar todas as OS completas (JOIN) para evitar N+1 queries
      */
     async getAllFull(): Promise<OrdemServico[]> {
@@ -444,7 +452,8 @@ export const OSModel = {
 
         // 🚀 PERFORMANCE: Process in chunks to avoid "database is locked"
         // This allows the UI to read from the DB in between write transactions
-        const CHUNK_SIZE = 3; // Reduzido drasticamente para evitar Lock
+        // REDUCED TO 1 to absolutely minimize transaction contention during debugging
+        const CHUNK_SIZE = 1;
 
         for (let i = 0; i < osList.length; i += CHUNK_SIZE) {
             const chunk = osList.slice(i, i + CHUNK_SIZE);

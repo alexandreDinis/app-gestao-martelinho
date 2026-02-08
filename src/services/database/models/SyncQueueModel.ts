@@ -132,9 +132,19 @@ export const SyncQueueModel = {
      * Métodos auxiliares para compatibilidade ou limpeza
      */
     async getPending(): Promise<SyncQueueItem[]> {
+        return this.getAllPending();
+    },
+
+    /**
+     * Get ALL pending items for in-memory sorting and phase-based processing.
+     * Respects MAX_RETRY_ATTEMPTS.
+     */
+    async getAllPending(): Promise<SyncQueueItem[]> {
         return await databaseService.runQuery<SyncQueueItem>(
-            `SELECT id, resource as entity_type, temp_id as entity_local_id, action as operation, payload, status, created_at, attempts 
-             FROM sync_queue WHERE status = 'PENDING' AND attempts < ? ORDER BY created_at ASC`,
+            `SELECT id, resource as entity_type, temp_id as entity_local_id, action as operation, payload, status, created_at, attempts, last_attempt 
+             FROM sync_queue 
+             WHERE status = 'PENDING' AND attempts < ? 
+             ORDER BY created_at ASC`,
             [MAX_RETRY_ATTEMPTS]
         );
     },

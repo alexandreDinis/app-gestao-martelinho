@@ -18,6 +18,14 @@ export const ClienteModel = {
     },
 
     /**
+     * Obter contagem total de Clientes
+     */
+    async getCount(): Promise<number> {
+        const result = await databaseService.getFirst<{ count: number }>(`SELECT COUNT(*) as count FROM clientes`);
+        return result?.count || 0;
+    },
+
+    /**
      * Buscar cliente por ID local
      */
     async getById(id: number): Promise<LocalCliente | null> {

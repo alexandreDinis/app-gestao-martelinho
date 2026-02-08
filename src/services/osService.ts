@@ -138,38 +138,51 @@ export const osService = {
         };
     },
 
-    listOS: async (since?: string): Promise<OrdemServico[]> => {
-        // 1. If Online & Not Force Offline, Sync with API
-        const { isConnected, isInternetReachable } = await OfflineDebug.checkConnectivity();
-        if (isConnected && isInternetReachable && !OfflineDebug.isForceOffline()) {
-            try {
-                Logger.info('[OSService] listOS - fetching from API', { since });
+    // --- In-flight Promise ---
+    _listOSPromise: null as Promise<OrdemServico[]> | null,
 
-                // Fetch from API
-                const response = await api.get<OrdemServico[]>('/ordens-servico', {
-                    params: { since }
-                });
-
-                if (response.data) {
-                    Logger.info(`[OSService] Received ${response.data.length} OSs from API`);
-
-                    // Update Local DB with fresh data (in a single transaction)
-                    await OSModel.upsertBatch(response.data);
-                }
-            } catch (error) {
-                Logger.error('[OSService] API fetch failed, using local data', error);
-                // Continue with local data
-            }
-        } else {
-            Logger.info('[OSService] listOS - Offline or Force Offline is ON');
+    listOS: async (): Promise<OrdemServico[]> => {
+        // Deduplication: If a read is already in progress, return it
+        if (osService._listOSPromise) {
+            Logger.info('[OSService] listOS - returning in-flight promise');
+            return osService._listOSPromise;
         }
 
-        // 2. Fetch from Local DB using optimized JOIN (Anti-Lock)
-        Logger.info('[OSService] listOS - fetching full hierarchy from Local DB (JOIN)');
-        const mappedList = await OSModel.getAllFull();
+        osService._listOSPromise = (async () => {
+            try {
+                // Pure Read-Only implementation
+                Logger.info('[OSService] listOS - fetching full hierarchy from Local DB (JOIN)');
+                const mappedList = await OSModel.getAllFull();
+                console.log(`[OSService] ✅ Returning ${mappedList.length} OS items to UI`);
+                return mappedList;
+            } finally {
+                osService._listOSPromise = null;
+            }
+        })();
 
-        console.log(`[OSService] ✅ Returning ${mappedList.length} OS items to UI`);
-        return mappedList;
+        return osService._listOSPromise;
+    },
+
+    /**
+     * Fetches OS data from API without persisting.
+     * Used by SyncService to handle the "Pull" phase.
+     */
+    fetchFromApi: async (since?: string): Promise<OrdemServico[]> => {
+        const { isConnected, isInternetReachable } = await OfflineDebug.checkConnectivity();
+        if (!isConnected || !isInternetReachable || OfflineDebug.isForceOffline()) {
+            return [];
+        }
+
+        try {
+            Logger.info('[OSService] fetchFromApi - fetching from API', { since });
+            const response = await api.get<OrdemServico[]>('/ordens-servico', {
+                params: { since }
+            });
+            return response.data || [];
+        } catch (error) {
+            Logger.error('[OSService] API fetch failed', error);
+            throw error;
+        }
     },
 
     getOSById: async (id: number | string): Promise<OrdemServico> => {

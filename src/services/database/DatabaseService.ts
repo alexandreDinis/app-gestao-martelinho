@@ -286,6 +286,19 @@ class DatabaseService {
             await db.execAsync(`DROP TABLE IF EXISTS ${table.name}`);
         }
 
+        // 🛡️ LIMPEZA DE ESTADO DE SYNC (CRÍTICO)
+        // Se apagamos o banco, precisamos apagar os marcadores de sync para forçar bootstrap
+        try {
+            const SecureStore = require('expo-secure-store');
+            console.log('[DatabaseService] 🧹 Clearing sync markers from SecureStore...');
+            await SecureStore.deleteItemAsync('last_full_sync_at');
+            await SecureStore.deleteItemAsync('last_sync_clientes');
+            await SecureStore.deleteItemAsync('last_sync_os');
+            await SecureStore.deleteItemAsync('has_forced_address_repair_v1');
+        } catch (error) {
+            console.warn('[DatabaseService] Failed to clear SecureStore markers:', error);
+        }
+
         // Recriar do zero
         console.log('[DatabaseService] Re-running migrations...');
         await this.runMigrations();
