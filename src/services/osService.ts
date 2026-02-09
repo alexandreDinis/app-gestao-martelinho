@@ -104,10 +104,10 @@ export const osService = {
             // Tentar criar na API primeiro
             try {
                 Logger.info('[OSService] Attempting API create (online mode)');
-                const response = await api.post<OrdemServico>('/ordens-servico', { ...data, empresaId });
+                const response = await api.post<OrdemServico>('/ordens-servico', data);
 
                 // Salvar no cache local como SYNCED
-                await OSModel.upsertFromServer(response.data);
+                await OSModel.upsertFromServer(response.data, empresaId);
 
                 Logger.info('[OSService] OS created successfully via API', { id: response.data.id });
                 return response.data;
@@ -155,23 +155,11 @@ export const osService = {
         const { isConnected, isInternetReachable } = await OfflineDebug.checkConnectivity();
         const isOnline = isConnected && isInternetReachable && !OfflineDebug.isForceOffline();
 
-        // 🛡️ Data Isolation: Get current user context
+        // 🛡️ Data Isolation: Get current user context from JWT/session (not local DB)
         const { authService } = require('./authService');
         const session = await authService.getSessionClaims();
         const userId = session?.userId;
-        let role = undefined;
-
-        if (userId) {
-            try {
-                const { UserModel } = require('./database/models/UserModel');
-                const user = await UserModel.getById(userId);
-                if (user) {
-                    role = user.role;
-                }
-            } catch (e) {
-                Logger.warn('[OSService] Failed to fetch user role for isolation', e);
-            }
-        }
+        const role = session?.role;
 
         Logger.info(`[OSService] listOS called (User: ${userId}, Role: ${role})`);
 
@@ -184,7 +172,7 @@ export const osService = {
         const localOS = await OSModel.getAllFull({
             empresaId: session.empresaId,
             userId: userId,
-            includeAllUsers: role === 'ADMIN'
+            includeAllUsers: !!role?.includes('ADMIN')
         });
 
         return localOS;
@@ -243,7 +231,7 @@ export const osService = {
                 const response = await api.get<OrdemServico>(`/ordens-servico/${id}`);
 
                 // Salvar no cache para acesso futuro offline
-                const localOS = await OSModel.upsertFromServer(response.data);
+                const localOS = await OSModel.upsertFromServer(response.data, session.empresaId);
 
                 // Retornar formato consistente
                 return await OSModel.toApiFormat(localOS);

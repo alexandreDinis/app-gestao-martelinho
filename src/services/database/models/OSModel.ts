@@ -11,7 +11,27 @@ import type { VeiculoModel as VeiculoModelType } from './VeiculoModel';
 import type { PecaModel as PecaModelType } from './PecaModel';
 import type { LocalCliente, LocalVeiculo, LocalPeca } from './types';
 
+/**
+ * Normaliza ISO timestamp: se não tiver timezone (LocalDateTime do backend),
+ * assume UTC e adiciona 'Z'. Garante comparações consistentes no replay protection.
+ */
+function normalizeIso(iso?: string | null): string | null {
+    if (!iso) return null;
+    // Se já tem Z, +, ou - (offset), está normalizado
+    if (/[Z+\-]\d{0,2}:?\d{0,2}$/.test(iso)) return iso;
+    return iso + 'Z';
+}
+
 export const OSModel = {
+    /** ISO string → millis (ou null se inválido). Normaliza LocalDateTime (sem TZ) → UTC. */
+    toMillis(iso?: string | null): number | null {
+        if (!iso) return null;
+        const normalized = normalizeIso(iso);
+        if (!normalized) return null;
+        const ms = Date.parse(normalized);
+        return Number.isNaN(ms) ? null : ms;
+    },
+
     /**
      * Buscar todas as OS locais
      */
@@ -486,7 +506,7 @@ export const OSModel = {
     /**
      * Salvar múltiplas OS do servidor no cache local (Batch)
      */
-    async upsertBatch(osList: OrdemServico[]): Promise<void> {
+    async upsertBatch(osList: OrdemServico[], empresaId?: number): Promise<void> {
         const db = databaseService.getDatabase();
 
         // 🚀 PERFORMANCE: Process in chunks to avoid "database is locked"
@@ -500,7 +520,7 @@ export const OSModel = {
 
             await db.withTransactionAsync(async () => {
                 for (const os of chunk) {
-                    await this.upsertFromServer(os);
+                    await this.upsertFromServer(os, empresaId);
                 }
             });
 
@@ -514,7 +534,7 @@ export const OSModel = {
     /**
      * Salvar OS do servidor no cache local
      */
-    async upsertFromServer(os: OrdemServico): Promise<LocalOS> {
+    async upsertFromServer(os: OrdemServico, callerEmpresaId?: number): Promise<LocalOS> {
         console.log(`[OSModel] 📥 UPSERT from Server: ID ${os.id}`, JSON.stringify(os, null, 2));
 
         // Column existence is ensured at DatabaseService initialization.
@@ -573,6 +593,15 @@ export const OSModel = {
                 }
             }
 
+            // 🛡️ REPLAY PROTECTION: Se o dado do servidor for mais antigo ou igual ao que já temos, ignorar
+            const incomingMs = this.toMillis(os.updatedAt);
+            const existingMs = this.toMillis(existing.server_updated_at);
+
+            if (incomingMs && existingMs && incomingMs <= existingMs) {
+                console.log(`[OSModel] 🛡️ Replay Protection: Ignorando update da OS ${os.id} (Server: ${incomingMs} <= Local: ${existingMs})`);
+                return existing;
+            }
+
             let usuarioNome = os.usuarioNome;
             let usuarioEmail = os.usuarioEmail;
 
@@ -593,16 +622,18 @@ export const OSModel = {
                 }
             }
 
-            const empresaIdSafe = os.empresaId ?? existing.empresa_id;
-            if (!empresaIdSafe) throw new Error(`[OSModel.upsertFromServer] empresaId ausente (os.id=${os.id})`);
+            const empresaIdSafe = os.empresaId ?? callerEmpresaId ?? existing.empresa_id;
+            if (!empresaIdSafe) {
+                console.warn(`[OSModel] ⚠️ empresaId missing for os.id=${os.id}, using existing=${existing.empresa_id}`);
+            }
 
             await databaseService.runUpdate(
                 `UPDATE ordens_servico SET
           server_id = ?,
           cliente_id = ?, cliente_local_id = ?, data = ?, data_vencimento = ?,
-          status = ?, valor_total = ?, tipo_desconto = ?, valor_desconto = ?,
           sync_status = 'SYNCED', last_synced_at = ?, updated_at = ?,
-          usuario_id = ?, usuario_nome = ?, usuario_email = ?, empresa_id = ?
+          usuario_id = ?, usuario_nome = ?, usuario_email = ?, empresa_id = ?,
+          server_updated_at = ?
          WHERE id = ?`,
                 [
                     os.id,
@@ -620,6 +651,7 @@ export const OSModel = {
                     usuarioNome ?? existing.usuario_nome ?? null,
                     usuarioEmail ?? existing.usuario_email ?? null,
                     empresaIdSafe,
+                    os.updatedAt || null,
                     existing.id
                 ]
             );
@@ -629,12 +661,9 @@ export const OSModel = {
             const localId = os.localId || uuidv4();
             const uuid = localId;
 
-            // Validação obrigatória de empresaId
-            if (!os.empresaId) {
-                // Se empresaId é 0, pode ser válido em alguns casos legados, mas o ideal é ter valor.
-                // O usuário pediu "sem || 0 (idealmente obrigatório)".
-                // Se vier 0 da API, ok. Se vier null/undefined, erro.
-                throw new Error(`[OSModel.upsertFromServer] empresaId ausente (os.id=${os.id})`);
+            const insertEmpresaId = callerEmpresaId ?? os.empresaId;
+            if (!insertEmpresaId) {
+                throw new Error(`[OSModel.upsertFromServer] empresaId ausente no INSERT (os.id=${os.id}). Caller deve fornecer empresaId.`);
             }
 
             const id = await databaseService.runInsert(
@@ -642,8 +671,8 @@ export const OSModel = {
           local_id, uuid, server_id, version, cliente_id, cliente_local_id,
           data, data_vencimento, status, valor_total, tipo_desconto, valor_desconto,
           sync_status, last_synced_at, updated_at, created_at,
-          usuario_id, usuario_nome, usuario_email, empresa_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          usuario_id, usuario_nome, usuario_email, empresa_id, server_updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                 [
                     localId,
                     uuid,
@@ -664,7 +693,8 @@ export const OSModel = {
                     os.usuarioId || (os.usuarioEmail ? 0 : null),
                     os.usuarioNome || null,
                     os.usuarioEmail || null,
-                    os.empresaId // empresa_id (FIXED: removed extra params and || 0 logic)
+                    insertEmpresaId, // empresa_id — always from caller (never 0)
+                    os.updatedAt || null
                 ]
             );
             console.log(`[OSModel] ✅ Inserted New OS: Local ID ${localId} / Server ID ${os.id}`);

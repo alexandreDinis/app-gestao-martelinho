@@ -53,7 +53,7 @@ export const authService = {
      * Retorna claims do token (userId, empresaId) sem depender de estado React.
      * Fonte da verdade absoluta para Sync e Offline Logic.
      */
-    getSessionClaims: async (): Promise<{ userId: number; empresaId: number } | null> => {
+    getSessionClaims: async (): Promise<{ userId: number; empresaId: number; role?: string } | null> => {
         try {
             const userStr = await SecureStore.getItemAsync('user');
             if (!userStr) return null;
@@ -83,11 +83,30 @@ export const authService = {
 
             const payload = JSON.parse(jsonPayload);
 
+            // 🔍 DEBUG: Identify role field names in login response and JWT
+            console.log('[authService] 🔍 Session Claims Debug:', JSON.stringify({
+                'user.role': user.role,
+                'user.roles': user.roles,
+                'payload.role': payload.role,
+                'payload.roles': payload.roles,
+                'payload.authorities': payload.authorities,
+                'payload.scope': payload.scope,
+                'payloadKeys': Object.keys(payload)
+            }));
+
             // Adjust field mapping based on backend JWT structure
             // Usually: sub (id), empresaId, or custom claims
+            const resolvedRole = user.role
+                || payload.role
+                || (user.roles && user.roles[0])
+                || (payload.roles && payload.roles[0])
+                || (Array.isArray(payload.authorities) && payload.authorities[0])
+                || undefined;
+
             return {
                 userId: Number(payload.sub || payload.id || payload.userId),
-                empresaId: Number(payload.tid || payload.empresaId || payload.empresa_id || 0)
+                empresaId: Number(payload.tid || payload.empresaId || payload.empresa_id || 0),
+                role: resolvedRole
             };
         } catch (error) {
             console.error('[authService] Failed to decode session claims:', error);

@@ -47,6 +47,11 @@ class DatabaseService {
                 await this.safeAddColumn('ordens_servico', 'empresa_id', 'INTEGER');
                 await this.safeAddColumn('clientes', 'empresa_id', 'INTEGER');
 
+                // PR3: Cliente Sync Patch (soft delete + replay protection)
+                await this.safeAddColumn('clientes', 'deleted_at', 'TEXT');
+                await this.safeAddColumn('clientes', 'server_updated_at', 'TEXT');
+                await this.safeAddColumn('ordens_servico', 'server_updated_at', 'TEXT');
+
                 // Index creation
                 try {
                     await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_users_empresa_id ON users (empresa_id);');
@@ -116,7 +121,16 @@ class DatabaseService {
                         .trim();
 
                     if (cleanStatement.length > 0) {
-                        await this.db.execAsync(cleanStatement);
+                        try {
+                            await this.db.execAsync(cleanStatement);
+                        } catch (stmtError: any) {
+                            // Tolerate "duplicate column name" errors (idempotent column additions)
+                            if (stmtError.message?.includes('duplicate column name')) {
+                                console.log(`[DatabaseService] ⏭️ Column already exists, skipping: ${cleanStatement.substring(0, 80)}...`);
+                            } else {
+                                throw stmtError; // Re-throw real errors
+                            }
+                        }
                     }
                 }
 

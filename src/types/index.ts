@@ -74,6 +74,9 @@ export interface Cliente {
     estado?: string;
     cep?: string;
     empresaId?: number;
+    // Sync & Soft Delete
+    deletedAt?: string | null;
+    updatedAt?: string | null;
 }
 
 export interface ClienteRequest {
@@ -138,6 +141,7 @@ export interface OrdemServico {
     usuarioEmail?: string;
     empresaId: number;
     localId?: string;
+    updatedAt?: string; // Replay protection
 }
 
 export interface CreateOSRequest {

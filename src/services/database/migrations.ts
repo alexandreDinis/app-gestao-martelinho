@@ -295,7 +295,31 @@ export const MIGRATIONS = [
       
       PRAGMA foreign_keys=ON;
     `
+  },
+  {
+    version: 7,
+    name: 'cliente_sync_patch',
+    sql: `
+      -- V7: Cliente sync patch — columns + indexes
+      -- The migration runner tolerates "duplicate column name" errors,
+      -- so these are safe to re-run.
+      ALTER TABLE clientes ADD COLUMN empresa_id INTEGER DEFAULT 0;
+      ALTER TABLE clientes ADD COLUMN deleted_at TEXT;
+      ALTER TABLE clientes ADD COLUMN server_updated_at TEXT;
+
+      -- Garante que (empresa_id, local_id) seja único → impede replay/skew duplicar
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_clientes_empresa_local_id
+        ON clientes(empresa_id, local_id);
+
+      -- Índice para lookup por (empresa_id, server_id)
+      CREATE INDEX IF NOT EXISTS idx_clientes_empresa_server_id
+        ON clientes(empresa_id, server_id);
+
+      -- Índice para replay protection por (empresa_id, server_updated_at)
+      CREATE INDEX IF NOT EXISTS idx_clientes_empresa_server_updated_at
+        ON clientes(empresa_id, server_updated_at);
+    `
   }
 ];
 
-export const CURRENT_DB_VERSION = 6;
+export const CURRENT_DB_VERSION = 7;

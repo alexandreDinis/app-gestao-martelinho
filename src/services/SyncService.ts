@@ -621,7 +621,7 @@ export const SyncService = {
 
             const osList = await osService.fetchFromApi(effectiveSince);
             if (osList.length > 0) {
-                await OSModel.upsertBatch(osList);
+                await OSModel.upsertBatch(osList, empresaId);
                 console.log(`✅ ${osList.length} ordens de serviço sincronizadas.`);
             }
             await SecureStore.setItemAsync(markerKey, syncStart);

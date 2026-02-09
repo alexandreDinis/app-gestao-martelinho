@@ -14,6 +14,7 @@ import { SimplePlateInput } from '../components/forms/SimplePlateInput';
 import Toast from 'react-native-toast-message';
 
 import { OfflineDebug } from '../utils/OfflineDebug';
+import { showApiErrorToast } from '../utils/apiErrorUtils';
 
 // ...
 
@@ -70,7 +71,7 @@ export const CreateOSScreen = () => {
             setClients(data);
             setFilteredClients(data);
         } catch (error) {
-            Alert.alert('Erro', 'Falha ao carregar clientes');
+            Toast.show({ type: 'error', text1: 'Erro', text2: 'Falha ao carregar clientes', topOffset: 60 });
         } finally {
             setLoadingClients(false);
         }
@@ -170,7 +171,7 @@ export const CreateOSScreen = () => {
 
         } catch (error) {
             console.error(error);
-            Alert.alert('Erro', 'Falha ao criar OS. Verifique os dados.');
+            showApiErrorToast(error, 'Falha ao criar OS');
         } finally {
             setSubmitting(false);
         }

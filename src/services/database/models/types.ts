@@ -47,6 +47,9 @@ export interface LocalCliente extends BaseLocalEntity {
     estado: string | null;
     cep: string | null;
     empresa_id?: number;
+    // V7: Sync & Soft Delete
+    deleted_at?: string | null;
+    server_updated_at?: string | null;
 }
 
 export interface LocalOS extends BaseLocalEntity {
@@ -63,6 +66,7 @@ export interface LocalOS extends BaseLocalEntity {
     usuario_nome?: string | null;
     usuario_email?: string | null;
     empresa_id?: number;
+    server_updated_at?: string | null; // Replay protection
 }
 
 export interface LocalVeiculo extends BaseLocalEntity {
