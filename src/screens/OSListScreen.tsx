@@ -8,6 +8,7 @@ import { osService } from '../services/osService';
 import { SyncService } from '../services/SyncService';
 import { OrdemServico, OSStatus, Cliente } from '../types';
 import { OfflineDebug } from '../utils/OfflineDebug';
+import { useSmartPolling } from '../hooks/useSmartPolling';
 
 type TabType = 'iniciadas' | 'finalizadas' | 'canceladas' | 'atrasadas';
 
@@ -25,6 +26,9 @@ export const OSListScreen = () => {
     const [activeTab, setActiveTab] = useState<TabType>('iniciadas');
     const [searchTerm, setSearchTerm] = useState('');
     const [dateFilter, setDateFilter] = useState('');
+
+    // 🔄 SMART POLLING
+    const { checkNow, FOCUS_DEBOUNCE_MS } = useSmartPolling();
 
     // Create Modal State
     const [createModalOpen, setCreateModalOpen] = useState(false);
@@ -58,7 +62,7 @@ export const OSListScreen = () => {
     const handleRefresh = async () => {
         setLoading(true);
         try {
-            await SyncService.syncAll(true, 'OSListScreen.refresh');
+            await checkNow('OSListScreen.refresh', true, 0); // Force sync
             await fetchOrdens();
         } catch (error) {
             console.error('Sync failed:', error);
@@ -80,7 +84,8 @@ export const OSListScreen = () => {
     useFocusEffect(
         useCallback(() => {
             fetchOrdens();
-        }, [])
+            checkNow('OSList.focus', false, FOCUS_DEBOUNCE_MS);
+        }, [checkNow])
     );
 
     const filteredOrdens = useMemo(() => {

@@ -327,6 +327,13 @@ export const SyncService = {
             if (data.length > 0) {
                 await ClienteModel.upsertBatch(data);
                 console.log(`✅ Clientes sincronizados: ${data.length} novos/atualizados`);
+
+                // 🧹 Full Sync Cleanup
+                if (!effectiveSince) {
+                    const { cleanZombies } = await import('./database/models/BaseModel');
+                    const serverIds = data.map((c: any) => c.id);
+                    await cleanZombies('clientes', 'empresa_id', empresaId, serverIds);
+                }
             }
             await SecureStore.setItemAsync(markerKey, syncStart);
         } catch (error) {
@@ -623,6 +630,14 @@ export const SyncService = {
             if (osList.length > 0) {
                 await OSModel.upsertBatch(osList, empresaId);
                 console.log(`✅ ${osList.length} ordens de serviço sincronizadas.`);
+
+                // 🧹 Full Sync Cleanup: If we fetched everything (effectiveSince is undefined/null),
+                // remove any local SYNCED OS that is not in the server list.
+                if (!effectiveSince) {
+                    const { cleanZombies } = await import('./database/models/BaseModel');
+                    const serverIds = osList.map(o => o.id);
+                    await cleanZombies('ordens_servico', 'empresa_id', empresaId, serverIds);
+                }
             }
             await SecureStore.setItemAsync(markerKey, syncStart);
         } catch (error) {

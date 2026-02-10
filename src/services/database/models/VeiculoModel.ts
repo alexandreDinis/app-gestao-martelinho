@@ -5,7 +5,7 @@ import { databaseService } from '../DatabaseService';
 import { v4 as uuidv4 } from 'uuid';
 import { LocalVeiculo, SYNC_PRIORITIES } from './types';
 import type { VeiculoOS, AddVeiculoRequest } from '../../../types';
-// import { OSModel } from './OSModel'; // Replaced by lazy load in methods
+import { cleanZombies } from './BaseModel';
 
 export const VeiculoModel = {
     /**
@@ -192,16 +192,33 @@ export const VeiculoModel = {
         }
 
         // Sync Peças/Serviços
-        if (veiculo.pecas && veiculo.pecas.length > 0) {
+        if (veiculo.pecas) {
             try {
                 const { PecaModel } = require('./PecaModel');
+                const validServerIds = new Set<number>();
+
+                // 1. Upsert incoming
                 for (const p of veiculo.pecas) {
-                    await PecaModel.upsertFromServer(p, localVeiculo.id);
+                    const saved = await PecaModel.upsertFromServer(p, localVeiculo.id);
+                    if (saved.server_id) validServerIds.add(saved.server_id);
                 }
+
+                // 2. Cleanup ("Zombie" pruning) - Generic Implementation
+                // Remove peças que estão no banco local (SYNCED) mas não vieram no payload do servidor
+                // Protege registros PENDING automaticamente
+                const serverIdsArray = Array.from(validServerIds);
+                if (serverIdsArray.length > 0) {
+                    await cleanZombies('pecas_os', 'veiculo_id', localVeiculo.id, serverIdsArray);
+                } else if (veiculo.pecas.length === 0) {
+                    // Se veio array vazio EXPLICITAMENTE, assume que removeu tudo
+                    await cleanZombies('pecas_os', 'veiculo_id', localVeiculo.id, []);
+                }
+
             } catch (e) {
                 console.error('[VeiculoModel] Erro ao sincronizar peças filhas', e);
             }
         }
+
 
         return localVeiculo;
     },

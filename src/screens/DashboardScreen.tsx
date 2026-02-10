@@ -12,6 +12,8 @@ import { VehicleHistoryModal } from '../components/modals/VehicleHistoryModal';
 import { CyberpunkAlert, CyberpunkAlertProps } from '../components/ui/CyberpunkAlert';
 import { SimplePlateInput } from '../components/forms/SimplePlateInput';
 
+import { useSmartPolling } from '../hooks/useSmartPolling';
+
 // Limpar placa helper
 const limparPlaca = (placa: string) => placa.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
 
@@ -32,6 +34,29 @@ export const DashboardScreen = () => {
     const [syncStatus, setSyncStatus] = useState<'BOOTSTRAP_REQUIRED' | 'UPDATES_AVAILABLE' | 'UP_TO_DATE'>('UP_TO_DATE');
     const [isSyncing, setIsSyncing] = useState(false);
 
+    // 🔄 SMART POLLING INTEGRATION
+    const { checkNow, FOCUS_DEBOUNCE_MS } = useSmartPolling((result: any) => {
+        if (result && result.status) {
+            setSyncStatus(result.status);
+            // Auto-alert for bootstrap
+            if (result.status === 'BOOTSTRAP_REQUIRED' && !isSyncing) {
+                setAlertConfig({
+                    visible: true,
+                    title: 'PRIMEIRA SINCRONIA',
+                    message: 'É necessário baixar os dados iniciais do servidor para começar.',
+                    type: 'info',
+                    actions: [{
+                        text: 'BAIXAR AGORA',
+                        onPress: () => {
+                            setAlertConfig({ visible: false });
+                            handleSync();
+                        }
+                    }]
+                });
+            }
+        }
+    });
+
     const checkUpdates = async (force = false, caller = 'Dashboard') => {
         try {
             const { SyncService } = await import('../services/SyncService');
@@ -39,39 +64,12 @@ export const DashboardScreen = () => {
             const pending = await SyncService.getLocalPendingCount();
             setPendingCount(pending);
 
-            // Check for server updates (returns structured status now)
-            const result = await SyncService.checkForUpdates(force, caller);
-
-            // Map legacy/refactored return types if necessary, but we updated SyncService to return { status, serverTime }
-            // Let's ensure types match. 
-            // SyncService returns: { status: 'BOOTSTRAP_REQUIRED' | ... }
-            if (result && result.status) {
-                setSyncStatus(result.status);
-
-                // Trigger auto-alert for bootstrap if needed
-                if (result.status === 'BOOTSTRAP_REQUIRED' && !isSyncing) {
-                    setAlertConfig({
-                        visible: true,
-                        title: 'PRIMEIRA SINCRONIA',
-                        message: 'É necessário baixar os dados iniciais do servidor para começar.',
-                        type: 'info',
-                        actions: [{
-                            text: 'BAIXAR AGORA',
-                            onPress: () => {
-                                setAlertConfig({ visible: false });
-                                handleSync();
-                            }
-                        }]
-                    });
-                }
-            }
+            // Manual check calls (refresh button etc)
+            await checkNow(caller, force, 0);
         } catch (error) {
             console.error('Failed to check updates:', error);
         }
     };
-
-    // Legacy checkFirstAccess removed or merged into checkUpdates logic via SyncService
-    // We keep a simple mount effect for data loading
 
     const handleSync = async () => {
         setIsSyncing(true);
@@ -112,7 +110,10 @@ export const DashboardScreen = () => {
         try {
             const data = await osService.listOS();
             setOsList(data);
-            checkUpdates(force, caller);
+            // Check updates on fetch (with debounce if not forced)
+            if (force) {
+                checkUpdates(true, caller);
+            }
         } catch (error) {
             console.error('Failed to load OS:', error);
         } finally {
@@ -123,7 +124,9 @@ export const DashboardScreen = () => {
     useFocusEffect(
         useCallback(() => {
             fetchData(false, 'Dashboard.focus');
-        }, [])
+            // Check updates on focus with 60s debounce
+            checkNow('Dashboard.focus', false, FOCUS_DEBOUNCE_MS);
+        }, [checkNow])
     );
 
     const onRefresh = () => {
