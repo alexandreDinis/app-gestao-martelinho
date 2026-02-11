@@ -8,6 +8,7 @@ import { SyncQueueModel } from './database/models/SyncQueueModel';
 import * as SecureStore from 'expo-secure-store';
 import api from './api';
 import { authService } from './authService';
+import { syncStorage } from '../utils/syncStorage';
 
 export const SyncService = {
     // --- MUTEX STATE ---
@@ -142,6 +143,17 @@ export const SyncService = {
             const globalMarkerKey = this.getMarkerKey('last_full_sync_at', baseHash, empresaId);
             await SecureStore.setItemAsync(globalMarkerKey, new Date().toISOString());
 
+            // 6. Update Version (atomic after success)
+            try {
+                const statusResponse = await api.get('/sync/status');
+                if (statusResponse.data.lastTenantVersion) {
+                    await syncStorage.setLastTenantVersion(statusResponse.data.lastTenantVersion, empresaId);
+                    console.log(`✅ [SyncService] Local version updated to ${statusResponse.data.lastTenantVersion}`);
+                }
+            } catch (verErr) {
+                console.warn('⚠️ [SyncService] Failed to update local version after sync', verErr);
+            }
+
         } catch (error) {
             console.error('❌ Erro na sincronização:', error);
             throw error; // Propagate to let caller know it failed
@@ -203,36 +215,58 @@ export const SyncService = {
 
                 const markerKey = this.getMarkerKey('last_full_sync_at', baseHash, empresaId);
                 const lastFullSync = await SecureStore.getItemAsync(markerKey);
+                const localVersion = await syncStorage.getLastTenantVersion(empresaId);
 
-                if (!lastFullSync) {
-                    console.log(`[SyncService] ⚠️ Missing full sync marker (${markerKey}). BOOTSTRAP REQUIRED.`);
+                if (!lastFullSync && localVersion === 0) {
+                    console.log(`[SyncService] ⚠️ Missing full sync marker (${markerKey}) and version is 0. BOOTSTRAP REQUIRED.`);
                     return { status: 'BOOTSTRAP_REQUIRED', serverTime: null };
                 }
 
-                const response = await api.get('/sync/status');
+                // Call API with version
+                const response = await api.get('/sync/status', {
+                    params: {
+                        lastSync: lastFullSync || new Date(0).toISOString(),
+                        lastTenantVersion: localVersion
+                    }
+                });
                 const status = response.data;
                 this._lastCheckForUpdates = Date.now();
 
-                const clientesKey = this.getMarkerKey('last_sync_clientes', baseHash, empresaId);
-                const osKey = this.getMarkerKey('last_sync_os', baseHash, empresaId);
-
-                const lastSyncClientes = await SecureStore.getItemAsync(clientesKey);
-                const lastSyncOS = await SecureStore.getItemAsync(osKey);
-
                 let hasUpdates = false;
 
-                // Handle null timestamps from server (e.g., empty backend DB)
-                // Treat null server timestamp as epoch 0 (no data)
-                const serverClientesMax = status.clientesUpdatedAtMax ? new Date(status.clientesUpdatedAtMax).getTime() : 0;
-                const localClientesMax = lastSyncClientes ? new Date(lastSyncClientes).getTime() : 0;
+                // 1. Priority: Version Check (New Logic) 🚀
+                if (status.lastTenantVersion && status.lastTenantVersion > localVersion) {
+                    console.log(`[SyncService] 🔄 Version Check: Server (${status.lastTenantVersion}) > Local (${localVersion}). Sync needed.`);
+                    hasUpdates = true;
+                }
+                // 2. Fallback: Flags (Compatibility)
+                else if (status.clientesUpdated !== undefined) {
+                    if (status.clientesUpdated) hasUpdates = true;
+                    if (status.osUpdated) hasUpdates = true;
+                    if (status.tiposPecaUpdated) hasUpdates = true;
+                    if (status.usersUpdated) hasUpdates = true;
+                    if (status.comissoesUpdated) hasUpdates = true;
+                    console.log(`[SyncService] Updates (Flags Fallback): ${hasUpdates}`);
+                }
+                // 3. Fallback: Legacy Timestamp Comparison
+                else {
+                    const clientesKey = this.getMarkerKey('last_sync_clientes', baseHash, empresaId);
+                    const osKey = this.getMarkerKey('last_sync_os', baseHash, empresaId);
 
-                const serverOSMax = status.osUpdatedAtMax ? new Date(status.osUpdatedAtMax).getTime() : 0;
-                const localOSMax = lastSyncOS ? new Date(lastSyncOS).getTime() : 0;
+                    const lastSyncClientes = await SecureStore.getItemAsync(clientesKey);
+                    const lastSyncOS = await SecureStore.getItemAsync(osKey);
 
-                if (serverClientesMax > localClientesMax) hasUpdates = true;
-                if (serverOSMax > localOSMax) hasUpdates = true;
+                    const serverClientesMax = status.clientesUpdatedAtMax ? new Date(status.clientesUpdatedAtMax).getTime() : 0;
+                    const localClientesMax = lastSyncClientes ? new Date(lastSyncClientes).getTime() : 0;
 
-                console.log(`[SyncService] Updates: ${hasUpdates} (C: ${serverClientesMax > localClientesMax}, OS: ${serverOSMax > localOSMax})`);
+                    const serverOSMax = status.osUpdatedAtMax ? new Date(status.osUpdatedAtMax).getTime() : 0;
+                    const localOSMax = lastSyncOS ? new Date(lastSyncOS).getTime() : 0;
+
+                    if (serverClientesMax > localClientesMax) hasUpdates = true;
+                    if (serverOSMax > localOSMax) hasUpdates = true;
+
+                    console.log(`[SyncService] Updates (Legacy TS): ${hasUpdates}`);
+                }
 
                 const resultStatus: 'BOOTSTRAP_REQUIRED' | 'UPDATES_AVAILABLE' | 'UP_TO_DATE' = hasUpdates ? 'UPDATES_AVAILABLE' : 'UP_TO_DATE';
 
@@ -342,15 +376,15 @@ export const SyncService = {
         }
     },
 
-    async processQueue(): Promise<void> {
+    async processQueue(caller = 'unknown'): Promise<void> {
         if (this._processQueuePromise) {
-            console.log('📤 ProcessQueue already in progress, returning in-flight promise.');
+            console.log(`⏳ processQueue already in progress [Caller: ${caller}], returning in-flight promise.`);
             return this._processQueuePromise;
         }
 
         this._processQueuePromise = (async () => {
             try {
-                await this.runExclusive(() => this._processQueueNoLock());
+                await this.runExclusive(() => this._processQueueNoLock(caller));
             } finally {
                 this._processQueuePromise = null;
             }
@@ -359,7 +393,8 @@ export const SyncService = {
         return this._processQueuePromise;
     },
 
-    async _processQueueNoLock(): Promise<void> {
+    async _processQueueNoLock(caller = 'unknown'): Promise<void> {
+        console.log(`📡 Processando Fila de Sync (Locked) [Caller: ${caller}]...`);
         console.log('📤 Processando fila de sincronização (Robust Sync V3 - Phased)...');
 
         // 1. Fetch All Pending Items

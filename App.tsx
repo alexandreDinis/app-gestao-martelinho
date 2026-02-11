@@ -18,6 +18,8 @@ import { theme } from './src/theme';
 import { NetworkStatusIndicator } from './src/components/NetworkStatusIndicator';
 import { Logger } from './src/services/Logger';
 
+console.log("🚀 APP STARTING - LOG TEST 🚀");
+
 const Stack = createStackNavigator<RootStackParamList>();
 
 function AppRoutes() {

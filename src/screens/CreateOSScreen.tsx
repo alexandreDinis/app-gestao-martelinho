@@ -45,7 +45,7 @@ export const CreateOSScreen = () => {
     };
 
     useEffect(() => {
-        if (showClientModal && clients.length === 0) {
+        if (showClientModal) {
             fetchClients();
         }
     }, [showClientModal]);

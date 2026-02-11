@@ -360,14 +360,39 @@ class SyncEngine {
                 }
                 if (!osServerId) throw new Error('OS not synced yet');
 
-                const response = await api.post('/ordens-servico/veiculos', {
-                    localId: item.entity_local_id, // 🆔 IMPORTANTE
-                    ordemServicoId: osServerId,
-                    placa: local.placa,
-                    modelo: local.modelo,
-                    cor: local.cor
-                });
-                await VeiculoModel.markAsSynced(item.entity_local_id, response.data.id);
+                let osResponse;
+
+                try {
+                    const response = await api.post('/ordens-servico/veiculos', {
+                        localId: item.entity_local_id, // 🆔 IMPORTANTE
+                        ordemServicoId: osServerId,
+                        placa: local.placa,
+                        modelo: local.modelo,
+                        cor: local.cor
+                    });
+                    osResponse = response.data;
+                } catch (error: any) {
+                    if (error.response?.status === 409) {
+                        console.warn(`[SyncEngine] ⚠️ Veículo já existe na OS ${osServerId} (409 Conflict). Tentando recuperar...`);
+                        // Se já existe, buscamos a OS atualizada para encontrar o ID do veículo
+                        const response = await api.get(`/ordens-servico/${osServerId}`);
+                        osResponse = response.data;
+                    } else {
+                        throw error;
+                    }
+                }
+
+                // Precisa achar o veículo criado (ou existente) dentro da OS
+                const createdVeiculo = osResponse.veiculos?.find(
+                    (v: any) => v.localId === item.entity_local_id || v.placa === local.placa
+                );
+
+                if (createdVeiculo?.id) {
+                    await VeiculoModel.markAsSynced(item.entity_local_id, createdVeiculo.id);
+                } else {
+                    console.error('[SyncEngine] Veículo não encontrado na resposta da OS', osResponse);
+                    throw new Error('Vehicle not found in OS response');
+                }
                 break;
             }
             case 'DELETE': {
@@ -441,7 +466,30 @@ class SyncEngine {
                     valorCobrado: local.valor_cobrado,
                     descricao: local.descricao
                 });
-                await PecaModel.markAsSynced(item.entity_local_id, response.data.id);
+
+                // RESPONSE É A OS, NÃO A PEÇA!
+                const osResponse = response.data;
+                let createdPecaId: number | null = null;
+
+                // Procurar peça por localId em todos os veículos (idealmente saberiamos qual veiculo, mas localId é unico)
+                if (osResponse.veiculos) {
+                    for (const v of osResponse.veiculos) {
+                        if (v.pecas) {
+                            const found = v.pecas.find((p: any) => p.localId === item.entity_local_id);
+                            if (found) {
+                                createdPecaId = found.id;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (createdPecaId) {
+                    await PecaModel.markAsSynced(item.entity_local_id, createdPecaId);
+                } else {
+                    console.error('[SyncEngine] Peça criada mas não encontrada na resposta da OS', osResponse);
+                    throw new Error('Peça not found in OS response after creation');
+                }
                 break;
             }
             case 'UPDATE': {

@@ -33,6 +33,11 @@ export const authService = {
     },
 
     logout: async () => {
+        const session = await authService.getSessionClaims();
+        if (session?.empresaId) {
+            const { syncStorage } = require('../utils/syncStorage');
+            await syncStorage.clearLastTenantVersion(session.empresaId);
+        }
         await SecureStore.deleteItemAsync('user');
         // Não remove credenciais biométricas aqui - usuário deve fazer isso manualmente nas configurações
     },

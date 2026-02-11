@@ -261,22 +261,42 @@ export const OSDetailsScreen = () => {
             return;
         }
 
-        try {
-            setUpdating(true);
-            await osService.addPeca({
-                veiculoId: pecaModal.veiculoId!,
-                tipoPecaId: parseInt(pecaForm.tipoPecaId),
-                valorCobrado: pecaForm.valorCobrado ? parseFloat(pecaForm.valorCobrado) : undefined,
-                descricao: pecaForm.descricao || undefined,
-            });
-            setPecaModal({ isOpen: false, veiculoId: null });
-            setPecaForm({ tipoPecaId: '', valorCobrado: '', descricao: '' });
-            fetchDetails();
-        } catch (error) {
-            Alert.alert('Erro', 'Falha ao adicionar serviço.');
-        } finally {
-            setUpdating(false);
+        const doAdd = async () => {
+            try {
+                setUpdating(true);
+                await osService.addPeca({
+                    veiculoId: pecaModal.veiculoId!,
+                    tipoPecaId: parseInt(pecaForm.tipoPecaId),
+                    valorCobrado: pecaForm.valorCobrado ? parseFloat(pecaForm.valorCobrado) : undefined,
+                    descricao: pecaForm.descricao || undefined,
+                });
+                setPecaModal({ isOpen: false, veiculoId: null });
+                setPecaForm({ tipoPecaId: '', valorCobrado: '', descricao: '' });
+                fetchDetails();
+            } catch (error) {
+                Alert.alert('Erro', 'Falha ao adicionar serviço.');
+            } finally {
+                setUpdating(false);
+            }
+        };
+
+        // Verificar serviço duplicado
+        const veiculo = os?.veiculos?.find(v => v.id === pecaModal.veiculoId);
+        const jaExiste = veiculo?.pecas?.some(p => p.tipoPecaId === parseInt(pecaForm.tipoPecaId));
+
+        if (jaExiste) {
+            Alert.alert(
+                'Serviço Duplicado',
+                'Esse serviço já foi adicionado a este veículo. Deseja continuar?',
+                [
+                    { text: 'Cancelar', style: 'cancel' },
+                    { text: 'Sim, Adicionar', onPress: doAdd }
+                ]
+            );
+            return;
         }
+
+        doAdd();
     };
 
     const handleDeletePeca = (pecaId: number, nomePeca: string) => {

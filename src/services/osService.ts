@@ -3,6 +3,7 @@ import { OSModel } from './database/models/OSModel';
 import { Logger } from './Logger';
 import { OfflineDebug } from '../utils/OfflineDebug';
 import * as SecureStore from 'expo-secure-store';
+import { databaseService } from './database/DatabaseService';
 import { Linking } from 'react-native';
 import type {
     Cliente, ClienteRequest, ClienteFiltros,
@@ -126,6 +127,11 @@ export const osService = {
             queuedForSync: true
         });
 
+        // 🔧 Trigger immediate sync
+        if (!OfflineDebug.isForceOffline()) {
+            import('./SyncService').then(m => m.SyncService.processQueue('OS.create_fallback').catch(e => console.error(e)));
+        }
+
         // Converter para formato da API para retornar
         // Note: veiculos virão vazios pois ainda não foram adicionados
         return {
@@ -211,33 +217,36 @@ export const osService = {
             throw new Error('Sessão inválida ou expirada (empresaId missing).');
         }
 
+        const { isConnected, isInternetReachable } = await OfflineDebug.checkConnectivity();
+        const isOnline = isConnected && isInternetReachable && !OfflineDebug.isForceOffline();
+
+        // 1. Online-First: buscar da API para garantir dados frescos (peças, veículos, etc.)
+        if (isOnline) {
+            try {
+                Logger.info('[OSService] Fetching OS from API (online-first)', { id });
+                const response = await api.get<OrdemServico>(`/ordens-servico/${id}`);
+
+                // Salvar no cache local para acesso offline futuro
+                const localOS = await OSModel.upsertFromServer(response.data, session.empresaId);
+
+                Logger.info('[OSService] OS fetched from API and cached locally');
+                return await OSModel.toApiFormat(localOS);
+            } catch (error) {
+                Logger.error('[OSService] API fetch failed for getOSById, falling back to local', error);
+                // Continua para fallback local
+            }
+        }
+
+        // 2. Fallback: Ler do cache local (JOIN Otimizado)
         try {
-            // 1. Tentar local primeiro (JOIN Otimizado) - Suporta ID numérico ou UUID
             const localFull = await OSModel.getByIdFull(id, session.empresaId);
 
             if (localFull) {
-                Logger.info('[OSService] Found full OS locally (JOIN)');
-                // Recalcular total por segurança (ainda local)
-                // Usamos o ID numérico do objeto local para o recálculo se necessário
-                const localId = (localFull as any).local_id_pk || localFull.id;
-                // Nota: O getByIdFull retorna formato OrdemServico. Se precisarmos recalcular, 
-                // precisaríamos do ID interno do SQLite. Por enquanto, assumimos que o JOIN trouxe dados frescos.
+                Logger.info('[OSService] Found full OS locally (JOIN fallback)');
                 return localFull;
             }
-
-            // 2. Se não achar local e estiver online, buscar API
-            if (!OfflineDebug.isForceOffline()) {
-                Logger.info('[OSService] Not found locally, fetching from API');
-                const response = await api.get<OrdemServico>(`/ordens-servico/${id}`);
-
-                // Salvar no cache para acesso futuro offline
-                const localOS = await OSModel.upsertFromServer(response.data, session.empresaId);
-
-                // Retornar formato consistente
-                return await OSModel.toApiFormat(localOS);
-            }
         } catch (error) {
-            Logger.error('[OSService] Error in getOSById', error);
+            Logger.error('[OSService] Error reading local OS', error);
         }
 
         throw new Error('Ordem de serviço não encontrada.');
@@ -245,6 +254,33 @@ export const osService = {
 
     updateStatus: async (id: number, status: OSStatus): Promise<OrdemServico> => {
         Logger.info('[OSService] updateStatus', { id, status });
+
+        const { isConnected, isInternetReachable } = await OfflineDebug.checkConnectivity();
+        const isOnline = isConnected && isInternetReachable && !OfflineDebug.isForceOffline();
+
+        if (isOnline) {
+            try {
+                Logger.info('[OSService] Attempting API status update (online mode)');
+                const response = await api.patch<OrdemServico>(`/ordens-servico/${id}/status`, { status });
+                Logger.info('[OSService] OS status updated successfully via API', { id });
+
+                // Atualizar no cache local como SYNCED
+                const localOS = await OSModel.getByServerId(id);
+                if (localOS) {
+                    await OSModel.updateStatus(id, status); // Local model updates status and marks as SYNCED if no other changes
+                    // Força status SYNCED pois acabamos de vir da API
+                    await databaseService.runUpdate(
+                        `UPDATE ordens_servico SET sync_status = 'SYNCED', last_synced_at = ? WHERE server_id = ?`,
+                        [Date.now(), id]
+                    );
+                }
+
+                return response.data;
+            } catch (error) {
+                Logger.error('[OSService] API status update failed, falling back to offline mode', error);
+                // Continua para offline
+            }
+        }
 
         // Offline-First: Salvar status localmente e enfileirar sync
         const localUpdated = await OSModel.updateStatus(id, status);
@@ -254,13 +290,8 @@ export const osService = {
         }
 
         // Tentar sincronizar imediatamente se estiver online
-        const { isConnected, isInternetReachable } = await OfflineDebug.checkConnectivity();
-        if (isConnected && isInternetReachable && !OfflineDebug.isForceOffline()) {
-            // Disparar sync em background para não bloquear UI, ou await se quisermos garantir envio
-            // Como a UI já atualizou com o retorno local, podemos deixar background.
-            // Mas para garantir feedbacks de erro, pode ser útil.
-            // Vamos chamar processQueue() que processa itens pendentes
-            import('./SyncService').then(m => m.SyncService.processQueue().catch(e => console.error(e)));
+        if (!OfflineDebug.isForceOffline()) {
+            import('./SyncService').then(m => m.SyncService.processQueue('OS.updateStatus').catch(e => console.error(e)));
         }
 
         return await OSModel.toApiFormat(localUpdated);
@@ -269,13 +300,36 @@ export const osService = {
     updateOS: async (id: number, data: any): Promise<OrdemServico> => {
         Logger.info('[OSService] updateOS called', { id, data });
 
-        // Map API keys to Local DB keys if necessary
+        const { isConnected, isInternetReachable } = await OfflineDebug.checkConnectivity();
+        const isOnline = isConnected && isInternetReachable && !OfflineDebug.isForceOffline();
+
+        if (isOnline) {
+            try {
+                Logger.info('[OSService] Attempting API OS update (online mode)');
+                const response = await api.patch<OrdemServico>(`/ordens-servico/${id}`, data);
+                Logger.info('[OSService] OS updated successfully via API', { id });
+
+                // Atualizar no cache local
+                const { authService } = require('./authService');
+                const session = await authService.getSessionClaims();
+                if (session?.empresaId) {
+                    await OSModel.upsertFromServer(response.data, session.empresaId);
+                }
+
+                return response.data;
+            } catch (error) {
+                Logger.error('[OSService] API OS update failed, falling back to offline mode', error);
+                // Continua para offline
+            }
+        }
+
+        // Map API keys to Local DB keys
         const localData: any = { ...data };
+        // ... (existing user resolution logic) ...
         if (data.usuarioId !== undefined) {
             localData.usuario_id = data.usuarioId;
             delete localData.usuarioId;
 
-            // Resolve name/email if missing to ensure UI displays correctly
             if (!data.usuarioNome || !data.usuarioEmail) {
                 try {
                     const { UserModel } = require('./database/models/UserModel');
@@ -284,11 +338,8 @@ export const osService = {
                     if (user) {
                         localData.usuario_nome = user.name;
                         localData.usuario_email = user.email;
-                        console.log(`[OSService] 👤 Resolved details for responsible user ${data.usuarioId}: ${user.name}`);
                     }
-                } catch (e) {
-                    console.error('[OSService] Failed to resolve user details', e);
-                }
+                } catch (e) { }
             }
         }
         if (data.usuarioNome !== undefined && !localData.usuario_nome) {
@@ -302,17 +353,14 @@ export const osService = {
 
         // Offline-First: Salvar localmente e enfileirar sync
         const localUpdated = await OSModel.update(id, localData);
-        console.log('[OSService] 💾 OS Updated locally:', localUpdated ? 'SUCCESS' : 'not found');
 
         if (!localUpdated) {
             throw new Error('OS não encontrada localmente para atualização.');
         }
 
-        // Tentar sincronizar imediatamente se estiver online
-        const { isConnected, isInternetReachable } = await OfflineDebug.checkConnectivity();
-        if (isConnected && isInternetReachable && !OfflineDebug.isForceOffline()) {
-            // Trigger process queue
-            import('./SyncService').then(m => m.SyncService.processQueue().catch(e => console.error(e)));
+        // Tentar sincronizar imediatamente
+        if (!OfflineDebug.isForceOffline()) {
+            import('./SyncService').then(m => m.SyncService.processQueue('OS.updateOS').catch(e => console.error(e)));
         }
 
         return await OSModel.toApiFormat(localUpdated);
@@ -321,18 +369,52 @@ export const osService = {
     addVeiculo: async (data: AddVeiculoRequest): Promise<VeiculoOS> => {
         Logger.info('[OSService] addVeiculo called', data);
 
-        // 1. Resolver OS Local (para garantir vínculo correto offline)
-        // O ID vindo da UI pode ser ServerID ou LocalID
-        let os = await import('./database/models/OSModel').then(m => m.OSModel.getByServerId(data.ordemServicoId));
+        const { isConnected, isInternetReachable } = await OfflineDebug.checkConnectivity();
+        const isOnline = isConnected && isInternetReachable && !OfflineDebug.isForceOffline();
+
+        if (isOnline) {
+            try {
+                Logger.info('[OSService] Attempting API addVeiculo (online mode)');
+                const response = await api.post<any>('/ordens-servico/veiculos', data);
+
+                // DATA É A OS (OrdemServicoResponse), NÃO O VEÍCULO!
+                // Precisa achar o veículo criado. Na via online, o último veículo costuma ser o adicionado.
+                // Mas para garantir, tentamos achar pela placa (se única)
+                const osResponse = response.data;
+                const createdVeiculo = osResponse.veiculos?.find(
+                    (v: any) => v.placa === data.placa.toUpperCase()
+                ) || osResponse.veiculos?.[osResponse.veiculos.length - 1];
+
+                Logger.info('[OSService] Vehicle added successfully via API', { id: createdVeiculo?.id });
+
+                if (createdVeiculo) {
+                    // Atualizar cache local
+                    const VeiculoModel = await import('./database/models/VeiculoModel').then(m => m.VeiculoModel);
+                    const os = await OSModel.getByServerId(data.ordemServicoId);
+
+                    // Upsert usando o veículo extraído corretamente
+                    await VeiculoModel.upsertFromServer(createdVeiculo, os?.id || 0);
+
+                    return createdVeiculo as VeiculoOS;
+                }
+
+                // Fallback se algo muito estranho acontecer
+                return response.data; // Vai quebrar tipagem mais pra frente, mas evita crash imediato
+
+            } catch (error) {
+                Logger.error('[OSService] API addVeiculo failed, falling back to offline mode', error);
+            }
+        }
+
+        // 1. Resolver OS Local
+        let os = await OSModel.getByServerId(data.ordemServicoId);
         if (!os) {
-            os = await import('./database/models/OSModel').then(m => m.OSModel.getById(data.ordemServicoId));
+            os = await OSModel.getById(data.ordemServicoId);
         }
 
         if (!os) {
             throw new Error(`OS não encontrada para vincular veículo: ${data.ordemServicoId}`);
         }
-
-        Logger.info(`[OSService] Adding vehicle to OS: ${os.id} (Server: ${os.server_id}, LocalUUID: ${os.local_id})`);
 
         // 2. Salvar localmente
         const VeiculoModel = await import('./database/models/VeiculoModel').then(m => m.VeiculoModel);
@@ -341,23 +423,18 @@ export const osService = {
             osLocalId: os.local_id
         });
 
-        console.log('[OSService] 💾 Veiculo saved locally:', localVeiculo.id);
-
-        // 3. Trigger Sync (se online)
-        const { isConnected, isInternetReachable } = await OfflineDebug.checkConnectivity();
-        if (isConnected && isInternetReachable && !OfflineDebug.isForceOffline()) {
-            // Trigger background sync
-            import('./SyncService').then(m => m.SyncService.processQueue().catch(e => console.error(e)));
+        // 3. Trigger Sync
+        if (!OfflineDebug.isForceOffline()) {
+            import('./SyncService').then(m => m.SyncService.processQueue('OS.addVeiculo').catch(e => console.error(e)));
         }
 
-        // 4. Retornar formato exigido pela UI (VeiculoOS)
         return {
             id: localVeiculo.server_id || localVeiculo.id,
             placa: localVeiculo.placa,
             modelo: localVeiculo.modelo || '',
             cor: localVeiculo.cor || '',
             valorTotal: localVeiculo.valor_total || 0,
-            pecas: [] // Recém criado não tem peças
+            pecas: []
         };
     },
 
@@ -496,12 +573,41 @@ export const osService = {
     addPeca: async (data: AddPecaRequest): Promise<PecaOS> => {
         Logger.info('[OSService] addPeca called', data);
 
-        // 1. Resolver Veículo Local
-        // O ID pode ser ServerID ou LocalID (PK)
-        let veiculo = await import('./database/models/VeiculoModel').then(m => m.VeiculoModel.getByServerId(data.veiculoId));
-        if (!veiculo) {
-            veiculo = await import('./database/models/VeiculoModel').then(m => m.VeiculoModel.getById(data.veiculoId));
+        const { isConnected, isInternetReachable } = await OfflineDebug.checkConnectivity();
+        const isOnline = isConnected && isInternetReachable && !OfflineDebug.isForceOffline();
+
+        if (isOnline) {
+            try {
+                Logger.info('[OSService] Attempting API addPeca (online mode)');
+                const response = await api.post<PecaOS>('/ordens-servico/pecas', data);
+                Logger.info('[OSService] Peca added successfully via API', { id: response.data.id });
+
+                // Atualizar cache local
+                const { authService } = require('./authService');
+                const session = await authService.getSessionClaims();
+                const PecaModel = await import('./database/models/PecaModel').then(m => m.PecaModel);
+                const VeiculoModel = await import('./database/models/VeiculoModel').then(m => m.VeiculoModel);
+
+                const veiculo = await VeiculoModel.getByServerId(data.veiculoId);
+                await PecaModel.upsertFromServer(response.data, veiculo?.id || 0);
+
+                // Recalcular totais locais
+                if (veiculo) {
+                    await VeiculoModel.recalculateTotal(veiculo.id);
+                    const osIdToRecalc = veiculo.os_id || (veiculo.os_local_id ? (await OSModel.getByLocalId(veiculo.os_local_id))?.id : null);
+                    if (osIdToRecalc) await OSModel.recalculateTotal(osIdToRecalc);
+                }
+
+                return response.data;
+            } catch (error) {
+                Logger.error('[OSService] API addPeca failed, falling back to offline mode', error);
+            }
         }
+
+        // 1. Resolver Veículo Local
+        const VeiculoModel = await import('./database/models/VeiculoModel').then(m => m.VeiculoModel);
+        let veiculo = await VeiculoModel.getByServerId(data.veiculoId);
+        if (!veiculo) veiculo = await VeiculoModel.getById(data.veiculoId);
 
         if (!veiculo) {
             throw new Error(`Veículo não encontrado: ${data.veiculoId}`);
@@ -514,36 +620,18 @@ export const osService = {
             veiculoLocalId: veiculo.local_id
         });
 
-        console.log('[OSService] 💾 Peca saved locally:', localPeca.id);
-
-        // 3. Recalcular Totais (Cascada)
+        // 3. Recalcular Totais
         try {
-            const osModel = await import('./database/models/OSModel').then(m => m.OSModel);
-            const veiculoModel = await import('./database/models/VeiculoModel').then(m => m.VeiculoModel);
+            await VeiculoModel.recalculateTotal(veiculo.id);
+            const osIdToRecalc = veiculo.os_id || (veiculo.os_local_id ? (await OSModel.getByLocalId(veiculo.os_local_id))?.id : null);
+            if (osIdToRecalc) await OSModel.recalculateTotal(osIdToRecalc);
+        } catch (e) { }
 
-            await veiculoModel.recalculateTotal(veiculo.id);
-
-            // Resolver ID da OS
-            let osId = veiculo.os_id;
-            if (!osId && veiculo.os_local_id) {
-                const osLocal = await osModel.getByLocalId(veiculo.os_local_id);
-                if (osLocal) osId = osLocal.id;
-            }
-
-            if (osId) {
-                await osModel.recalculateTotal(osId);
-            }
-        } catch (recalcError) {
-            console.error('[OSService] ⚠️ Error recalculating totals:', recalcError);
+        // 4. Trigger Sync
+        if (!OfflineDebug.isForceOffline()) {
+            import('./SyncService').then(m => m.SyncService.processQueue('OS.addPeca').catch(e => console.error(e)));
         }
 
-        // 4. Trigger Sync (se online)
-        const { isConnected, isInternetReachable } = await OfflineDebug.checkConnectivity();
-        if (isConnected && isInternetReachable && !OfflineDebug.isForceOffline()) {
-            import('./SyncService').then(m => m.SyncService.processQueue().catch(e => console.error(e)));
-        }
-
-        // 4. Retornar formato API (PecaOS)
         return {
             id: localPeca.server_id || localPeca.id,
             nomePeca: localPeca.nome_peca || '',
@@ -555,8 +643,10 @@ export const osService = {
     deletePeca: async (id: number): Promise<void> => {
         Logger.info('[OSService] deletePeca called', { id });
 
+        const { isConnected, isInternetReachable } = await OfflineDebug.checkConnectivity();
+        const isOnline = isConnected && isInternetReachable && !OfflineDebug.isForceOffline();
+
         // 1. Resolver peça local
-        // O ID pode ser ServerID ou LocalID
         const PecaModel = await import('./database/models/PecaModel').then(m => m.PecaModel);
         let peca = await PecaModel.getByServerId(id);
         if (!peca) peca = await PecaModel.getById(id);
@@ -568,8 +658,29 @@ export const osService = {
 
         const veiculoId = peca.veiculo_id;
 
-        // 2. Deletar localmente
-        await PecaModel.delete(peca.id);
+        // 2. Online-First: Tentar deletar na API primeiro
+        if (isOnline && peca.server_id) {
+            try {
+                Logger.info('[OSService] Attempting API deletePeca (online mode)', { serverId: peca.server_id });
+                await api.delete(`/ordens-servico/pecas/${peca.server_id}`);
+                Logger.info('[OSService] Peca deleted successfully via API');
+
+                // Remover fisicamente do banco local (já foi deletada no servidor)
+                const { databaseService } = require('./database/DatabaseService');
+                await databaseService.runDelete(`DELETE FROM pecas_os WHERE id = ?`, [peca.id]);
+                await databaseService.runDelete(
+                    `DELETE FROM sync_queue WHERE resource = 'peca' AND temp_id = ?`,
+                    [peca.local_id]
+                );
+            } catch (error) {
+                Logger.error('[OSService] API deletePeca failed, falling back to offline mode', error);
+                // Fallback: marcar localmente para deleção
+                await PecaModel.delete(peca.id);
+            }
+        } else {
+            // Offline: marcar localmente para deleção + sync queue
+            await PecaModel.delete(peca.id);
+        }
 
         // 3. Recalcular Totais
         if (veiculoId) {
@@ -577,7 +688,7 @@ export const osService = {
                 const veiculoModel = await import('./database/models/VeiculoModel').then(m => m.VeiculoModel);
                 const osModel = await import('./database/models/OSModel').then(m => m.OSModel);
 
-                const newVeiculoTotal = await veiculoModel.recalculateTotal(veiculoId);
+                await veiculoModel.recalculateTotal(veiculoId);
 
                 const v = await veiculoModel.getById(veiculoId);
                 let osId = v?.os_id;
@@ -594,15 +705,17 @@ export const osService = {
             }
         }
 
-        // 4. Trigger Sync (se online)
-        const { isConnected, isInternetReachable } = await OfflineDebug.checkConnectivity();
-        if (isConnected && isInternetReachable && !OfflineDebug.isForceOffline()) {
-            import('./SyncService').then(m => m.SyncService.processQueue().catch(e => console.error(e)));
+        // 4. Trigger Sync (para itens offline pendentes)
+        if (!OfflineDebug.isForceOffline()) {
+            import('./SyncService').then(m => m.SyncService.processQueue('OS.deletePeca').catch(e => console.error(e)));
         }
     },
 
     deleteVeiculo: async (id: number): Promise<void> => {
         Logger.info('[OSService] deleteVeiculo called', { id });
+
+        const { isConnected, isInternetReachable } = await OfflineDebug.checkConnectivity();
+        const isOnline = isConnected && isInternetReachable && !OfflineDebug.isForceOffline();
 
         const VeiculoModel = await import('./database/models/VeiculoModel').then(m => m.VeiculoModel);
         let v = await VeiculoModel.getByServerId(id);
@@ -616,8 +729,30 @@ export const osService = {
         const osIdLocal = v.os_id;
         const osUUID = v.os_local_id;
 
-        // 1. Deletar localmente
-        await VeiculoModel.delete(v.id);
+        // 1. Online-First: Tentar deletar na API primeiro
+        if (isOnline && v.server_id) {
+            try {
+                Logger.info('[OSService] Attempting API deleteVeiculo (online mode)', { serverId: v.server_id });
+                await api.delete(`/ordens-servico/veiculos/${v.server_id}`);
+                Logger.info('[OSService] Veiculo deleted successfully via API');
+
+                // Remover fisicamente do banco local
+                const { databaseService } = require('./database/DatabaseService');
+                await databaseService.runDelete(`DELETE FROM pecas_os WHERE veiculo_id = ?`, [v.id]);
+                await databaseService.runDelete(`DELETE FROM veiculos_os WHERE id = ?`, [v.id]);
+                await databaseService.runDelete(
+                    `DELETE FROM sync_queue WHERE resource = 'veiculo' AND temp_id = ?`,
+                    [v.local_id]
+                );
+            } catch (error) {
+                Logger.error('[OSService] API deleteVeiculo failed, falling back to offline mode', error);
+                // Fallback: marcar localmente para deleção
+                await VeiculoModel.delete(v.id);
+            }
+        } else {
+            // Offline: marcar localmente para deleção + sync queue
+            await VeiculoModel.delete(v.id);
+        }
 
         // 2. Recalcular Total da OS
         try {
@@ -636,9 +771,8 @@ export const osService = {
         }
 
         // 3. Trigger Sync
-        const { isConnected, isInternetReachable } = await OfflineDebug.checkConnectivity();
-        if (isConnected && isInternetReachable && !OfflineDebug.isForceOffline()) {
-            import('./SyncService').then(m => m.SyncService.processQueue().catch(e => console.error(e)));
+        if (!OfflineDebug.isForceOffline()) {
+            import('./SyncService').then(m => m.SyncService.processQueue('OS.deleteVeiculo').catch(e => console.error(e)));
         }
     },
 
@@ -675,6 +809,11 @@ export const osService = {
         if (localOS) {
             Logger.info('[OSService] Deleting OS locally (queueing)', { localId: localOS.local_id });
             await OSModel.markAsDeleted(localOS.local_id);
+
+            // 🔧 Trigger immediate sync
+            if (!OfflineDebug.isForceOffline()) {
+                import('./SyncService').then(m => m.SyncService.processQueue('OS.deleteOS_fallback').catch(e => console.error(e)));
+            }
         } else {
             console.warn('[OSService] OS not found locally for deletion', id);
         }

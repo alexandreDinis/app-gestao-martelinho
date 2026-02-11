@@ -108,6 +108,8 @@ export interface ClienteFiltros {
 export interface PecaOS {
     id: number;
     localId?: string;
+    tipoPecaId?: number;
+    tipoPeca?: { id: number; nome: string };
     nomePeca: string;
     valorCobrado: number;
     descricao?: string;

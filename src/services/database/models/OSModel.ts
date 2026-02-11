@@ -88,7 +88,7 @@ export const OSModel = {
                 c.bairro as c_bairro, c.cidade as c_cidade, c.estado as c_estado, c.cep as c_cep,
                 v.id as v_id, v.local_id as v_local_id, v.server_id as v_server_id, v.placa as v_placa, 
                 v.modelo as v_modelo, v.cor as v_cor, v.valor_total as v_valor_total,
-                p.id as p_id, p.local_id as p_local_id, p.server_id as p_server_id, p.nome_peca as p_nome_peca, 
+                p.id as p_id, p.local_id as p_local_id, p.server_id as p_server_id, p.tipo_peca_id as p_tipo_peca_id, p.nome_peca as p_nome_peca, 
                 p.valor_cobrado as p_valor_cobrado, p.descricao as p_descricao
             FROM ordens_servico os
             LEFT JOIN clientes c ON (os.cliente_id = c.id OR os.cliente_local_id = c.local_id)
@@ -166,6 +166,7 @@ export const OSModel = {
                 if (row.p_id) {
                     veiculo.pecas.push({
                         id: row.p_server_id || row.p_id,
+                        tipoPecaId: row.p_tipo_peca_id || undefined,
                         nomePeca: row.p_nome_peca || '',
                         valorCobrado: row.p_valor_cobrado || 0,
                         descricao: row.p_descricao || undefined
@@ -174,7 +175,30 @@ export const OSModel = {
             }
         }
 
-        return Array.from(osMap.values());
+        // Recalculate totals for all OSs
+        const osList = Array.from(osMap.values());
+        for (const os of osList) {
+            const totalPecas = os.veiculos.reduce((accV, v) => {
+                const totalV = v.pecas.reduce((accP, p) => accP + (p.valorCobrado || 0), 0);
+                v.valorTotal = totalV; // Update vehicle total as well
+                return accV + totalV;
+            }, 0);
+
+            os.valorTotalSemDesconto = totalPecas;
+
+            // Apply discount
+            const tipoDesconto = os.tipoDesconto as string | null | undefined;
+            if ((tipoDesconto === 'REAL' || tipoDesconto === 'VALOR_FIXO') && os.valorDesconto) {
+                os.valorTotal = Math.max(0, totalPecas - os.valorDesconto);
+            } else if ((tipoDesconto === 'PORCENTAGEM' || tipoDesconto === 'PERCENTUAL') && os.valorDesconto) {
+                os.valorTotal = Math.max(0, totalPecas - (totalPecas * (os.valorDesconto / 100)));
+            } else {
+                os.valorTotal = totalPecas;
+                os.valorTotalComDesconto = totalPecas;
+            }
+        }
+
+        return osList;
     },
 
     /**
@@ -204,7 +228,7 @@ export const OSModel = {
                 c.bairro as c_bairro, c.cidade as c_cidade, c.estado as c_estado, c.cep as c_cep,
                 v.id as v_id, v.local_id as v_local_id, v.server_id as v_server_id, v.placa as v_placa, 
                 v.modelo as v_modelo, v.cor as v_cor, v.valor_total as v_valor_total,
-                p.id as p_id, p.local_id as p_local_id, p.server_id as p_server_id, p.nome_peca as p_nome_peca, 
+                p.id as p_id, p.local_id as p_local_id, p.server_id as p_server_id, p.tipo_peca_id as p_tipo_peca_id, p.nome_peca as p_nome_peca, 
                 p.valor_cobrado as p_valor_cobrado, p.descricao as p_descricao
             FROM ordens_servico os
             LEFT JOIN clientes c ON (os.cliente_id = c.id OR os.cliente_local_id = c.local_id)
@@ -285,11 +309,32 @@ export const OSModel = {
                 if (row.p_id) {
                     veiculo.pecas.push({
                         id: row.p_server_id || row.p_id,
+                        tipoPecaId: row.p_tipo_peca_id || undefined,
                         nomePeca: row.p_nome_peca || '',
                         valorCobrado: row.p_valor_cobrado || 0,
                         descricao: row.p_descricao || undefined
                     });
                 }
+            }
+        }
+
+        if (os) {
+            const totalPecas = os.veiculos.reduce((accV, v) => {
+                const totalV = v.pecas.reduce((accP, p) => accP + (p.valorCobrado || 0), 0);
+                v.valorTotal = totalV;
+                return accV + totalV;
+            }, 0);
+
+            os.valorTotalSemDesconto = totalPecas;
+
+            const tipoDesconto = os.tipoDesconto as string | null | undefined;
+            if ((tipoDesconto === 'REAL' || tipoDesconto === 'VALOR_FIXO') && os.valorDesconto) {
+                os.valorTotal = Math.max(0, totalPecas - os.valorDesconto);
+            } else if ((tipoDesconto === 'PORCENTAGEM' || tipoDesconto === 'PERCENTUAL') && os.valorDesconto) {
+                os.valorTotal = Math.max(0, totalPecas - (totalPecas * (os.valorDesconto / 100)));
+            } else {
+                os.valorTotal = totalPecas;
+                os.valorTotalComDesconto = totalPecas;
             }
         }
 
@@ -352,6 +397,37 @@ export const OSModel = {
             throw new Error(`[OSModel.toApiFormat] OS sem empresa_id (local_id=${local.local_id}, id=${local.id})`);
         }
 
+        const veiculosApi = await Promise.all(veiculos.map(async (v: LocalVeiculo) => {
+            const pecas = await PecaModel.getByVeiculoId(v.id);
+            console.log(`[OSModel] toApiFormat: Veiculo Local PK ${v.id} (Placa: ${v.placa}) has ${pecas.length} pecas. Raw Pecas:`, JSON.stringify(pecas));
+            const totalV = pecas.reduce((acc: number, p: LocalPeca) => acc + (p.valor_cobrado || 0), 0);
+            return {
+                id: v.server_id || v.id,
+                placa: v.placa,
+                modelo: v.modelo || '',
+                cor: v.cor || '',
+                valorTotal: totalV,
+                pecas: pecas.map((p: LocalPeca) => ({
+                    id: p.server_id || p.id,
+                    tipoPecaId: p.tipo_peca_id || undefined,
+                    nomePeca: p.nome_peca || '',
+                    valorCobrado: p.valor_cobrado || 0,
+                    descricao: p.descricao || undefined
+                }))
+            };
+        }));
+
+        const totalPecas = veiculosApi.reduce((acc, v) => acc + v.valorTotal, 0);
+        let valorTotalFinal = totalPecas;
+
+        const tipoDescontoLocal = local.tipo_desconto as string | null;
+
+        if ((tipoDescontoLocal === 'REAL' || tipoDescontoLocal === 'VALOR_FIXO') && local.valor_desconto) {
+            valorTotalFinal = Math.max(0, totalPecas - local.valor_desconto);
+        } else if ((tipoDescontoLocal === 'PORCENTAGEM' || tipoDescontoLocal === 'PERCENTUAL') && local.valor_desconto) {
+            valorTotalFinal = Math.max(0, totalPecas - (totalPecas * (local.valor_desconto / 100)));
+        }
+
         return {
             id: local.server_id || local.id, // Preferência server_id se synced, senão ID local
             localId: local.local_id, // Importante para referência futura
@@ -360,29 +436,13 @@ export const OSModel = {
             data: local.data,
             dataVencimento: local.data_vencimento || undefined,
             status: local.status as OSStatus,
-            valorTotal: local.valor_total || 0,
-            tipoDesconto: local.tipo_desconto as 'REAL' | 'PORCENTAGEM' | null,
+            valorTotal: valorTotalFinal,
+            tipoDesconto: local.tipo_desconto as any, // Cast to any to avoid conflict between DB value and strict type
             valorDesconto: local.valor_desconto || undefined,
-            valorTotalSemDesconto: local.valor_total || 0, // Simplificação
-            valorTotalComDesconto: local.valor_total || 0, // Simplificação
+            valorTotalSemDesconto: totalPecas, // Simplificação
+            valorTotalComDesconto: valorTotalFinal, // Simplificação
             atrasado: false, // Calcular se necessário
-            veiculos: await Promise.all(veiculos.map(async (v: LocalVeiculo) => {
-                const pecas = await PecaModel.getByVeiculoId(v.id);
-                console.log(`[OSModel] toApiFormat: Veiculo Local PK ${v.id} (Placa: ${v.placa}) has ${pecas.length} pecas. Raw Pecas:`, JSON.stringify(pecas));
-                return {
-                    id: v.server_id || v.id,
-                    placa: v.placa,
-                    modelo: v.modelo || '',
-                    cor: v.cor || '',
-                    valorTotal: v.valor_total || 0,
-                    pecas: pecas.map((p: LocalPeca) => ({
-                        id: p.server_id || p.id,
-                        nomePeca: p.nome_peca || '',
-                        valorCobrado: p.valor_cobrado || 0,
-                        descricao: p.descricao || undefined
-                    }))
-                };
-            })),
+            veiculos: veiculosApi,
             usuarioId: local.usuario_id || undefined,
             usuarioNome: local.usuario_nome || undefined,
             usuarioEmail: local.usuario_email || undefined,
@@ -593,12 +653,13 @@ export const OSModel = {
                 }
             }
 
-            // 🛡️ REPLAY PROTECTION: Se o dado do servidor for mais antigo ou igual ao que já temos, ignorar
+            // 🛡️ REPLAY PROTECTION: Se o dado do servidor for MAIS ANTIGO que o que já temos, ignorar
+            // Nota: timestamps iguais (===) são aceitos — mesma versão, não é replay
             const incomingMs = this.toMillis(os.updatedAt);
             const existingMs = this.toMillis(existing.server_updated_at);
 
-            if (incomingMs && existingMs && incomingMs <= existingMs) {
-                console.log(`[OSModel] 🛡️ Replay Protection: Ignorando update da OS ${os.id} (Server: ${incomingMs} <= Local: ${existingMs})`);
+            if (incomingMs && existingMs && incomingMs < existingMs) {
+                console.log(`[OSModel] 🛡️ Replay Protection: Ignorando update da OS ${os.id} (Server: ${incomingMs} < Local: ${existingMs})`);
                 return existing;
             }
 

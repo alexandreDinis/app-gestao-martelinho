@@ -155,12 +155,15 @@ export const PecaModel = {
         }
 
         if (existing) {
+            // Extrair tipo_peca_id do response da API (pode vir como tipoPecaId ou tipoPeca.id)
+            const tipoPecaId = peca.tipoPecaId || peca.tipoPeca?.id || existing.tipo_peca_id || null;
+
             await databaseService.runUpdate(
                 `UPDATE pecas_os SET
-          server_id = ?, nome_peca = ?, valor_cobrado = ?, descricao = ?,
+          server_id = ?, tipo_peca_id = ?, nome_peca = ?, valor_cobrado = ?, descricao = ?,
           sync_status = 'SYNCED', updated_at = ?
          WHERE id = ?`,
-                [peca.id, peca.nomePeca || existing.nome_peca, peca.valorCobrado, peca.descricao, now, existing.id]
+                [peca.id, tipoPecaId, peca.nomePeca || existing.nome_peca, peca.valorCobrado, peca.descricao, now, existing.id]
             );
             return (await this.getById(existing.id))!;
         } else {
@@ -172,18 +175,22 @@ export const PecaModel = {
             const veiculo = await VeiculoModel.getById(veiculoLocalId);
             const veiculoLocalUUID = veiculo?.local_id || null;
 
+            // Extrair tipo_peca_id do response da API
+            const tipoPecaId = peca.tipoPecaId || peca.tipoPeca?.id || null;
+
             const id = await databaseService.runInsert(
                 `INSERT INTO pecas_os (
           local_id, server_id, version, veiculo_id, veiculo_local_id,
-          nome_peca, valor_cobrado, descricao,
+          tipo_peca_id, nome_peca, valor_cobrado, descricao,
           sync_status, updated_at, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'SYNCED', ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'SYNCED', ?, ?)`,
                 [
                     localId,
                     peca.id,
                     1,
                     veiculoLocalId, // PK Integer
                     veiculoLocalUUID, // UUID string
+                    tipoPecaId,
                     peca.nomePeca,
                     peca.valorCobrado,
                     peca.descricao,
