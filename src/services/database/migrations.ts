@@ -319,7 +319,27 @@ export const MIGRATIONS = [
       CREATE INDEX IF NOT EXISTS idx_clientes_empresa_server_updated_at
         ON clientes(empresa_id, server_updated_at);
     `
+  },
+  {
+    version: 8,
+    name: 'os_sync_patch',
+    sql: `
+        -- V8: OS sync patch - adicionar suporte a multi-tenancy e replay protection
+        ALTER TABLE ordens_servico ADD COLUMN empresa_id INTEGER DEFAULT 0;
+        ALTER TABLE ordens_servico ADD COLUMN server_updated_at TEXT;
+        ALTER TABLE ordens_servico ADD COLUMN deleted_at TEXT;
+
+        -- Índices para performance e unicidade
+        -- Unicidade composta (empresa, local_id) (opcional, mas recomendado)
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_os_empresa_local_id ON ordens_servico(empresa_id, local_id);
+
+        -- Lookup rápido por empresa
+        CREATE INDEX IF NOT EXISTS idx_os_empresa_id ON ordens_servico(empresa_id);
+
+        -- Replay protection
+        CREATE INDEX IF NOT EXISTS idx_os_empresa_server_updated_at ON ordens_servico(empresa_id, server_updated_at);
+    `
   }
 ];
 
-export const CURRENT_DB_VERSION = 7;
+export const CURRENT_DB_VERSION = 8;

@@ -8,7 +8,7 @@ import { SyncQueueModel } from './database/models/SyncQueueModel';
 import * as SecureStore from 'expo-secure-store';
 import api from './api';
 import { authService } from './authService';
-import { syncStorage } from '../utils/syncStorage';
+import { syncSecureStorage } from '../utils/syncSecureStorage';
 
 export const SyncService = {
     // --- MUTEX STATE ---
@@ -55,9 +55,7 @@ export const SyncService = {
      * Helper: Generate Base Hash from API URL
      */
     getBaseHash(): string {
-        const url = api.defaults.baseURL || '';
-        // Simple hash function (or just clean string)
-        // Remove protocol and special chars
+        const url = (api.defaults.baseURL || '').replace(/\/+$/, ''); // remove trailing /
         return url.replace(/https?:\/\//, '').replace(/[^a-zA-Z0-9]/g, '_');
     },
 
@@ -106,6 +104,23 @@ export const SyncService = {
             // 0. Retry Strategy
             await SyncQueueModel.retryAllFailed();
 
+            // 0.1 Prepare & Get Server Time (Cursor)
+            const localVersion = await syncSecureStorage.getLastTenantVersion(baseHash, empresaId);
+            const globalMarkerKey = this.getMarkerKey('last_full_sync_at', baseHash, empresaId);
+            const lastFullSync = await SecureStore.getItemAsync(globalMarkerKey);
+
+            // Fetch status FIRST to get serverTime (new cursor)
+            console.log('⏳ Fetching server status/time...');
+            const statusResponse = await api.get('/sync/status', {
+                params: {
+                    lastSync: lastFullSync || new Date(0).toISOString(),
+                    lastTenantVersion: localVersion
+                }
+            });
+
+            const serverTime = statusResponse.data?.serverTime;
+            const serverTenantVersion = statusResponse.data?.lastTenantVersion;
+
             // 1. PUSH
             await this._processQueueNoLock();
 
@@ -139,19 +154,23 @@ export const SyncService = {
 
             console.log('✅ Sincronização Completa Finalizada!');
 
-            // Set Global Marker (Multi-tenant)
-            const globalMarkerKey = this.getMarkerKey('last_full_sync_at', baseHash, empresaId);
-            await SecureStore.setItemAsync(globalMarkerKey, new Date().toISOString());
+            // 6. Update Markers ATOMICALLY (using Server Time)
+            if (typeof serverTime === 'string' && serverTime.length > 10) {
+                await SecureStore.setItemAsync(globalMarkerKey, serverTime);
+                console.log(`✅ [SyncService] Updated last_full_sync_at to Server Time: ${serverTime}`);
+            } else {
+                console.warn('⚠️ serverTime inválido/ausente, não atualizando last_full_sync_at');
+            }
 
-            // 6. Update Version (atomic after success)
-            try {
-                const statusResponse = await api.get('/sync/status');
-                if (statusResponse.data.lastTenantVersion) {
-                    await syncStorage.setLastTenantVersion(statusResponse.data.lastTenantVersion, empresaId);
-                    console.log(`✅ [SyncService] Local version updated to ${statusResponse.data.lastTenantVersion}`);
+            if (serverTenantVersion !== undefined && serverTenantVersion !== null) {
+                const sv = Number(serverTenantVersion);
+                if (Number.isFinite(sv)) {
+                    await syncSecureStorage.setLastTenantVersion(baseHash, empresaId, sv);
+                    const savedVersion = await syncSecureStorage.getLastTenantVersion(baseHash, empresaId);
+                    const savedSync = await SecureStore.getItemAsync(globalMarkerKey);
+                    console.log(`✅ [SyncService] Updated local version to ${sv}`);
+                    console.log(`🔍 [SyncService] Sanity Check End: Version=${savedVersion}, LastFullSync=${savedSync}`);
                 }
-            } catch (verErr) {
-                console.warn('⚠️ [SyncService] Failed to update local version after sync', verErr);
             }
 
         } catch (error) {
@@ -183,7 +202,6 @@ export const SyncService = {
             console.log(`[SyncService] checkForUpdates [Caller: ${caller}] - returning in-flight promise`);
             return this._checkForUpdatesPromise;
         }
-
         const now = Date.now();
         const THROTTLE_MS = 30 * 1000; // 30 seconds throttle
         if (!force && this._lastCheckForUpdates > 0 && (now - this._lastCheckForUpdates < THROTTLE_MS)) {
@@ -206,19 +224,23 @@ export const SyncService = {
                 const { empresaId } = session;
 
                 // 🛡️ SANITY CHECK: Se banco local desta empresa estiver vazio, força bootstrap
-                const localCount = await OSModel.getCountByEmpresa(empresaId);
+                const localOSCount = await OSModel.getCountByEmpresa(empresaId);
+                const localClientCount = await ClienteModel.getCountByEmpresa(empresaId); // Additional check
 
-                if (localCount === 0) {
-                    console.log(`[SyncService] ⚠️ Local OS count for Empresa ${empresaId} is 0. Forcing BOOTSTRAP_REQUIRED.`);
-                    return { status: 'BOOTSTRAP_REQUIRED', serverTime: null };
-                }
+                // Only force bootstrap if both major tables are empty AND marker is missing/broken
+                // or if specifically designed to safeguard empty state.
+                // Refined Rule: Bootstrap if missing marker OR (OS=0 AND Client=0)
 
                 const markerKey = this.getMarkerKey('last_full_sync_at', baseHash, empresaId);
                 const lastFullSync = await SecureStore.getItemAsync(markerKey);
-                const localVersion = await syncStorage.getLastTenantVersion(empresaId);
+                let localVersion = await syncSecureStorage.getLastTenantVersion(baseHash, empresaId);
 
-                if (!lastFullSync && localVersion === 0) {
-                    console.log(`[SyncService] ⚠️ Missing full sync marker (${markerKey}) and version is 0. BOOTSTRAP REQUIRED.`);
+                console.log(`🔍 [SyncService] CheckForUpdates Sanity: Hash=${baseHash}, Emp=${empresaId}, Ver=${localVersion}, LastSync=${lastFullSync || 'NULL'}, OS=${localOSCount}, CLI=${localClientCount}`);
+
+                const isDbEmpty = localOSCount === 0 && localClientCount === 0;
+
+                if (!lastFullSync && isDbEmpty) {
+                    console.log(`[SyncService] ⚠️ Missing marker AND DB Empty (OS=0, Cli=0). Forcing BOOTSTRAP_REQUIRED.`);
                     return { status: 'BOOTSTRAP_REQUIRED', serverTime: null };
                 }
 
@@ -230,7 +252,22 @@ export const SyncService = {
                     }
                 });
                 const status = response.data;
+                if (!status) {
+                    console.warn('[SyncService] Check for updates: Response data empty/null.');
+                    return { status: 'UP_TO_DATE', serverTime: null };
+                }
                 this._lastCheckForUpdates = Date.now();
+
+                // 🚀 Seeding Logic: If local is 0 and server > 0, save immediately
+                const rawVersion = status.lastTenantVersion;
+                const serverV = Number(rawVersion);
+
+                if (Number.isFinite(serverV) && serverV > 0 && localVersion === 0 && !isDbEmpty) {
+                    await syncSecureStorage.setLastTenantVersion(baseHash, empresaId, serverV);
+                    console.log(`[SyncService] 🌱 Seeded local tenantVersion to ${serverV}`);
+                    // Update local variable for subsequent checks
+                    localVersion = serverV;
+                }
 
                 let hasUpdates = false;
 
@@ -295,6 +332,23 @@ export const SyncService = {
         const markerKey = this.getMarkerKey('last_full_sync_at', baseHash, session.empresaId);
 
         const lastFullSync = await SecureStore.getItemAsync(markerKey);
+
+        // 🛡️ SELF-HEALING: If DB is empty, force bootstrap regardless of markers
+        const osCount = await OSModel.getCountByEmpresa(session.empresaId);
+        const cliCount = await ClienteModel.getCountByEmpresa(session.empresaId);
+        const isDbEmpty = (osCount === 0 && cliCount === 0);
+
+        if (isDbEmpty) {
+            console.log(`[SyncService] 🧹 DB vazio detectado (OS=${osCount}, Cli=${cliCount}). Invalidando markers e forçando bootstrap...`);
+
+            // Clear phantom markers
+            await SecureStore.deleteItemAsync(markerKey);
+            await syncSecureStorage.clearLastTenantVersion(baseHash, session.empresaId);
+
+            console.log(`🚀 BOOTSTRAP: Start full sync for Empresa ${session.empresaId}... (Forced by Empty DB)`);
+            await this.syncAll(true, 'SyncEngine.bootstrap_db_empty');
+            return;
+        }
 
         if (!lastFullSync) {
             console.log(`🚀 BOOTSTRAP: Start full sync for Empresa ${session.empresaId}... (Missing Marker)`);

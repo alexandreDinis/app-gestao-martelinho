@@ -177,9 +177,13 @@ class DatabaseService {
         }
     }
 
-    getDatabase(): SQLite.SQLiteDatabase {
+    async getDatabase(): Promise<SQLite.SQLiteDatabase> {
+        if (!this.db || !this.isInitialized) {
+            console.warn('[DatabaseService] Database not initialized, attempt auto-init...');
+            await this.initialize();
+        }
         if (!this.db) {
-            throw new Error('Database not initialized. Call initialize() first.');
+            throw new Error('Database failed to initialize');
         }
         return this.db;
     }
@@ -193,34 +197,69 @@ class DatabaseService {
         }
     }
 
-    // Métodos utilitários genéricos
+    /**
+     * Executes a database operation with auto-retry and re-initialization on failure.
+     * Prevents crashes due to "NativeDatabase.prepareAsync" NPEs or closed connections.
+     */
+    private async performWithRetry<T>(operation: (db: SQLite.SQLiteDatabase) => Promise<T>, attempts = 2): Promise<T> {
+        try {
+            const db = await this.getDatabase();
+            return await operation(db);
+        } catch (error: any) {
+            const msg = error?.message || String(error);
+            // Catch common native layer crashes or closed DB errors
+            if (attempts > 0 && (
+                msg.includes('NativeDatabase.prepareAsync') ||
+                msg.includes('NullPointerException') ||
+                msg.includes('database not open') ||
+                msg.includes('closed')
+            )) {
+                console.warn(`[DatabaseService] ⚠️ DB Error detected ("${msg}"). Re-initializing and retrying (${attempts} left)...`);
+
+                // Force reset connection
+                this.db = null;
+                this.isInitialized = false;
+
+                // Retry
+                return this.performWithRetry(operation, attempts - 1);
+            }
+            throw error;
+        }
+    }
+
+    // Métodos utilitários genéricos - Agora usando performWithRetry
 
     async runQuery<T>(sql: string, params: any[] = []): Promise<T[]> {
-        const db = this.getDatabase();
-        return await db.getAllAsync<T>(sql, params);
+        return this.performWithRetry(async (db) => {
+            return await db.getAllAsync<T>(sql, params);
+        });
     }
 
     async runInsert(sql: string, params: any[] = []): Promise<number> {
-        const db = this.getDatabase();
-        const result = await db.runAsync(sql, params);
-        return result.lastInsertRowId;
+        return this.performWithRetry(async (db) => {
+            const result = await db.runAsync(sql, params);
+            return result.lastInsertRowId;
+        });
     }
 
     async runUpdate(sql: string, params: any[] = []): Promise<number> {
-        const db = this.getDatabase();
-        const result = await db.runAsync(sql, params);
-        return result.changes;
+        return this.performWithRetry(async (db) => {
+            const result = await db.runAsync(sql, params);
+            return result.changes;
+        });
     }
 
     async runDelete(sql: string, params: any[] = []): Promise<number> {
-        const db = this.getDatabase();
-        const result = await db.runAsync(sql, params);
-        return result.changes;
+        return this.performWithRetry(async (db) => {
+            const result = await db.runAsync(sql, params);
+            return result.changes;
+        });
     }
 
     async getFirst<T>(sql: string, params: any[] = []): Promise<T | null> {
-        const db = this.getDatabase();
-        return await db.getFirstAsync<T>(sql, params);
+        return this.performWithRetry(async (db) => {
+            return await db.getFirstAsync<T>(sql, params);
+        });
     }
 
     // Métodos de metadados
@@ -305,7 +344,7 @@ class DatabaseService {
      */
     async resetDatabase(): Promise<void> {
         console.log('[DatabaseService] 🔄 Resetting database...');
-        const db = this.getDatabase();
+        const db = await this.getDatabase(); // Use await getDatabase()
 
         // Listar todas as tabelas
         const tables = await db.getAllAsync<{ name: string }>(`

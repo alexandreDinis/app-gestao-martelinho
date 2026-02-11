@@ -171,7 +171,7 @@ export const ClienteModel = {
      * Salvar múltiplos clientes do servidor no cache local (Batch)
      */
     async upsertBatch(clientes: Cliente[]): Promise<void> {
-        const db = databaseService.getDatabase();
+        const db = await databaseService.getDatabase();
 
         // 🚀 PERFORMANCE: Chunked processing to prevent locks during large syncs
         const CHUNK_SIZE = 20; // Clientes são mais leves que OS, podemos usar batch maior

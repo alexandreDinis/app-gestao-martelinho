@@ -42,22 +42,96 @@ api.interceptors.request.use(
     }
 );
 
-// Response Interceptor
+// Response Interceptor - Refresh Token Logic
+let isRefreshing = false;
+let failedQueue: Array<{
+    resolve: (token: string) => void;
+    reject: (error: any) => void;
+}> = [];
+
+const processQueue = (error: any, token: string | null = null) => {
+    failedQueue.forEach(prom => {
+        if (error) {
+            prom.reject(error);
+        } else {
+            prom.resolve(token as string);
+        }
+    });
+    failedQueue = [];
+};
+
 api.interceptors.response.use(
     (response) => {
         // Logger.info(`API Response: ${response.status} ${response.config.url}`, response.data);
         return response;
     },
     async (error) => {
+        const originalRequest = error.config;
+
+        // Handle 401 Auth Version Mismatch
+        if (error.response?.status === 401 && !originalRequest._retry && !originalRequest.url?.endsWith('/auth/login') && !originalRequest.url?.endsWith('/auth/refresh')) {
+            const errorMsg = error.response.data?.error || "";
+
+            // Backend sends: "Plano/status alterado. Faça login novamente." OR "Permissões alteradas. Faça login novamente."
+            if (errorMsg.includes("Plano/status alterado") || errorMsg.includes("Permissões alteradas")) {
+
+                if (isRefreshing) {
+                    return new Promise(function (resolve, reject) {
+                        failedQueue.push({ resolve, reject });
+                    }).then(token => {
+                        originalRequest.headers['Authorization'] = 'Bearer ' + token;
+                        return api(originalRequest);
+                    }).catch(err => {
+                        return Promise.reject(err);
+                    });
+                }
+
+                originalRequest._retry = true;
+                isRefreshing = true;
+
+                try {
+                    console.log("[API] Auth Version Mismatch detected. Attempting Auto-Refresh...");
+
+                    // Use api instance to include stale token in headers (validated by signature only at /refresh endpoint)
+                    const refreshResponse = await api.post('/auth/refresh');
+                    const newUserFields = refreshResponse.data;
+
+                    const userStr = await SecureStore.getItemAsync('user');
+                    const oldUser = userStr ? JSON.parse(userStr) : {};
+
+                    // Merge updated fields (token, roles, features, etc.)
+                    const updatedUser = { ...oldUser, ...newUserFields };
+
+                    await SecureStore.setItemAsync('user', JSON.stringify(updatedUser));
+                    console.log("[API] Token refreshed successfully!");
+
+                    // Update defaults and original request
+                    api.defaults.headers.common['Authorization'] = 'Bearer ' + updatedUser.token;
+                    originalRequest.headers['Authorization'] = 'Bearer ' + updatedUser.token;
+
+                    processQueue(null, updatedUser.token);
+
+                    return api(originalRequest);
+                } catch (refreshError) {
+                    processQueue(refreshError, null);
+                    Logger.error("[API] Failed to refresh token", refreshError);
+                    await SecureStore.deleteItemAsync('user');
+                    return Promise.reject(refreshError);
+                } finally {
+                    isRefreshing = false;
+                }
+            }
+        }
+
         if (error.response) {
             Logger.error(`API Error: ${error.response.status} ${error.config?.url}`, error.response.data);
             if (error.response.status === 401 || error.response.status === 403) {
-                Logger.warn(`[API] ${error.response.status} - Token invalid/expired or Forbidden`);
-                // In React Native, we can't just redirect via window.location.
-                // We should clear storage so the App's AuthState updates on next check.
-                await SecureStore.deleteItemAsync('user');
-
-                // Opcional: Disparar evento para a UI redirecionar para Login se estiver ouvindo
+                // If we are here, it means it wasn't a handled version mismatch refresh
+                // or the refresh itself failed (prevent loop)
+                if (!originalRequest._retry && !originalRequest.url?.endsWith('/auth/refresh')) {
+                    Logger.warn(`[API] ${error.response.status} - Token invalid/expired or Forbidden (Logged Out)`);
+                    await SecureStore.deleteItemAsync('user');
+                }
             }
         } else {
             const fullURL = `${error.config?.baseURL || ''}${error.config?.url || ''}`;

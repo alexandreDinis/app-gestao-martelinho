@@ -567,7 +567,7 @@ export const OSModel = {
      * Salvar múltiplas OS do servidor no cache local (Batch)
      */
     async upsertBatch(osList: OrdemServico[], empresaId?: number): Promise<void> {
-        const db = databaseService.getDatabase();
+        const db = await databaseService.getDatabase();
 
         // 🚀 PERFORMANCE: Process in chunks to avoid "database is locked"
         // This allows the UI to read from the DB in between write transactions
