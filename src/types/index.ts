@@ -113,6 +113,7 @@ export interface PecaOS {
     nomePeca: string;
     valorCobrado: number;
     descricao?: string;
+    deletedAt?: string | null;
 }
 
 export interface VeiculoOS {
@@ -123,6 +124,7 @@ export interface VeiculoOS {
     cor: string;
     valorTotal: number;
     pecas: PecaOS[];
+    deletedAt?: string | null;
 }
 
 export interface OrdemServico {
@@ -144,6 +146,7 @@ export interface OrdemServico {
     empresaId: number;
     localId?: string;
     updatedAt?: string; // Replay protection
+    deletedAt?: string | null;
 }
 
 export interface CreateOSRequest {

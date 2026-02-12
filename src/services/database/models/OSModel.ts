@@ -37,7 +37,7 @@ export const OSModel = {
      */
     async getAll(): Promise<LocalOS[]> {
         return await databaseService.runQuery<LocalOS>(
-            `SELECT * FROM ordens_servico WHERE sync_status != 'PENDING_DELETE' ORDER BY data DESC`
+            `SELECT * FROM ordens_servico WHERE deleted_at IS NULL AND sync_status != 'PENDING_DELETE' ORDER BY data DESC`
         );
     },
 
@@ -45,13 +45,13 @@ export const OSModel = {
      * Obter contagem total de OS
      */
     async getCount(): Promise<number> {
-        const result = await databaseService.getFirst<{ count: number }>(`SELECT COUNT(*) as count FROM ordens_servico`);
+        const result = await databaseService.getFirst<{ count: number }>(`SELECT COUNT(*) as count FROM ordens_servico WHERE deleted_at IS NULL`);
         return result?.count || 0;
     },
 
     async getCountByEmpresa(empresaId: number): Promise<number> {
         const result = await databaseService.getFirst<{ count: number }>(
-            `SELECT COUNT(*) as count FROM ordens_servico WHERE empresa_id = ?`,
+            `SELECT COUNT(*) as count FROM ordens_servico WHERE empresa_id = ? AND deleted_at IS NULL`,
             [empresaId]
         );
         return result?.count || 0;
@@ -65,7 +65,7 @@ export const OSModel = {
      * Suporta filtro por usuário (Data Isolation)
      */
     async getAllFull(params: { empresaId: number; userId?: number; includeAllUsers?: boolean }): Promise<OrdemServico[]> {
-        let whereClause = "WHERE os.empresa_id = ? AND os.sync_status != 'PENDING_DELETE'";
+        let whereClause = "WHERE os.empresa_id = ? AND os.deleted_at IS NULL AND os.sync_status != 'PENDING_DELETE'";
         const sqlParams: any[] = [params.empresaId];
 
         // 🛡️ Data Isolation:
@@ -206,7 +206,7 @@ export const OSModel = {
      */
     async getById(id: number): Promise<LocalOS | null> {
         return await databaseService.getFirst<LocalOS>(
-            `SELECT * FROM ordens_servico WHERE id = ?`,
+            `SELECT * FROM ordens_servico WHERE id = ? AND deleted_at IS NULL`,
             [id]
         );
     },
@@ -234,7 +234,7 @@ export const OSModel = {
             LEFT JOIN clientes c ON (os.cliente_id = c.id OR os.cliente_local_id = c.local_id)
             LEFT JOIN veiculos_os v ON (os.id = v.os_id OR os.local_id = v.os_local_id)
             LEFT JOIN pecas_os p ON (v.id = p.veiculo_id OR v.local_id = p.veiculo_local_id)
-            WHERE (os.id = ? OR os.local_id = ?) AND os.empresa_id = ?
+            WHERE (os.id = ? OR os.local_id = ?) AND os.empresa_id = ? AND os.deleted_at IS NULL
         `;
 
         const rows = await databaseService.runQuery<any>(query, [id, id, empresaId]);
@@ -346,7 +346,7 @@ export const OSModel = {
      */
     async getByServerId(serverId: number): Promise<LocalOS | null> {
         return await databaseService.getFirst<LocalOS>(
-            `SELECT * FROM ordens_servico WHERE server_id = ?`,
+            `SELECT * FROM ordens_servico WHERE server_id = ? AND deleted_at IS NULL`,
             [serverId]
         );
     },
@@ -356,7 +356,7 @@ export const OSModel = {
      */
     async getByLocalId(localId: string): Promise<LocalOS | null> {
         return await databaseService.getFirst<LocalOS>(
-            `SELECT * FROM ordens_servico WHERE local_id = ?`,
+            `SELECT * FROM ordens_servico WHERE local_id = ? AND deleted_at IS NULL`,
             [localId]
         );
     },
@@ -457,7 +457,7 @@ export const OSModel = {
     async getByStatus(status: OSStatus): Promise<LocalOS[]> {
         return await databaseService.runQuery<LocalOS>(
             `SELECT * FROM ordens_servico 
-       WHERE status = ? AND sync_status != 'PENDING_DELETE'
+       WHERE status = ? AND deleted_at IS NULL AND sync_status != 'PENDING_DELETE'
        ORDER BY data DESC`,
             [status]
         );
@@ -469,7 +469,7 @@ export const OSModel = {
     async getByClienteId(clienteId: number): Promise<LocalOS[]> {
         return await databaseService.runQuery<LocalOS>(
             `SELECT * FROM ordens_servico 
-       WHERE cliente_id = ? AND sync_status != 'PENDING_DELETE'
+       WHERE cliente_id = ? AND deleted_at IS NULL AND sync_status != 'PENDING_DELETE'
        ORDER BY data DESC`,
             [clienteId]
         );
@@ -527,8 +527,8 @@ export const OSModel = {
         local_id, uuid, server_id, version, cliente_id, cliente_local_id,
         data, data_vencimento, status, valor_total,
         sync_status, updated_at, created_at,
-        usuario_id, usuario_nome, usuario_email, empresa_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        usuario_id, usuario_nome, usuario_email, empresa_id, deleted_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
                 localId,
                 uuid,
@@ -546,7 +546,8 @@ export const OSModel = {
                 usuarioId, // usuario_id (FIX: was usuarioNome)
                 usuarioNome, // usuario_nome (FIX: was usuarioEmail)
                 usuarioEmail, // usuario_email (FIX: was usuarioNome)
-                data.empresaId // empresa_id (FIX: was usuarioEmail, and removed || 0 per request)
+                data.empresaId, // empresa_id (FIX: was usuarioEmail, and removed || 0 per request)
+                null // deleted_at
             ]
         );
 
@@ -692,9 +693,10 @@ export const OSModel = {
                 `UPDATE ordens_servico SET
           server_id = ?,
           cliente_id = ?, cliente_local_id = ?, data = ?, data_vencimento = ?,
+          status = ?, valor_total = ?, tipo_desconto = ?, valor_desconto = ?,
           sync_status = 'SYNCED', last_synced_at = ?, updated_at = ?,
           usuario_id = ?, usuario_nome = ?, usuario_email = ?, empresa_id = ?,
-          server_updated_at = ?
+          server_updated_at = ?, deleted_at = ?
          WHERE id = ?`,
                 [
                     os.id,
@@ -713,6 +715,7 @@ export const OSModel = {
                     usuarioEmail ?? existing.usuario_email ?? null,
                     empresaIdSafe,
                     os.updatedAt || null,
+                    os.deletedAt || null,
                     existing.id
                 ]
             );
@@ -732,8 +735,8 @@ export const OSModel = {
           local_id, uuid, server_id, version, cliente_id, cliente_local_id,
           data, data_vencimento, status, valor_total, tipo_desconto, valor_desconto,
           sync_status, last_synced_at, updated_at, created_at,
-          usuario_id, usuario_nome, usuario_email, empresa_id, server_updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          usuario_id, usuario_nome, usuario_email, empresa_id, server_updated_at, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                 [
                     localId,
                     uuid,
@@ -755,7 +758,8 @@ export const OSModel = {
                     os.usuarioNome || null,
                     os.usuarioEmail || null,
                     insertEmpresaId, // empresa_id — always from caller (never 0)
-                    os.updatedAt || null
+                    os.updatedAt || null,
+                    os.deletedAt || null
                 ]
             );
             console.log(`[OSModel] ✅ Inserted New OS: Local ID ${localId} / Server ID ${os.id}`);

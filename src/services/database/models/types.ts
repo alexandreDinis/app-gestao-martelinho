@@ -66,6 +66,7 @@ export interface LocalOS extends BaseLocalEntity {
     usuario_nome?: string | null;
     usuario_email?: string | null;
     empresa_id?: number;
+    deleted_at?: string | null;
     server_updated_at?: string | null; // Replay protection
 }
 
@@ -76,6 +77,7 @@ export interface LocalVeiculo extends BaseLocalEntity {
     modelo: string | null;
     cor: string | null;
     valor_total: number;
+    deleted_at?: string | null;
 }
 
 export interface LocalPeca extends BaseLocalEntity {
@@ -85,6 +87,7 @@ export interface LocalPeca extends BaseLocalEntity {
     nome_peca: string | null;
     valor_cobrado: number | null;
     descricao: string | null;
+    deleted_at?: string | null;
 }
 
 export interface LocalDespesa extends BaseLocalEntity {

@@ -47,10 +47,13 @@ class DatabaseService {
                 await this.safeAddColumn('ordens_servico', 'empresa_id', 'INTEGER');
                 await this.safeAddColumn('clientes', 'empresa_id', 'INTEGER');
 
-                // PR3: Cliente Sync Patch (soft delete + replay protection)
+                // PR3: Cliente/OS Sync Patch (soft delete + replay protection)
                 await this.safeAddColumn('clientes', 'deleted_at', 'TEXT');
                 await this.safeAddColumn('clientes', 'server_updated_at', 'TEXT');
+                await this.safeAddColumn('ordens_servico', 'deleted_at', 'TEXT');
                 await this.safeAddColumn('ordens_servico', 'server_updated_at', 'TEXT');
+                await this.safeAddColumn('veiculos_os', 'deleted_at', 'TEXT');
+                await this.safeAddColumn('pecas_os', 'deleted_at', 'TEXT');
 
                 // Index creation
                 try {

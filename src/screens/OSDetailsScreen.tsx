@@ -52,9 +52,10 @@ export const OSDetailsScreen = () => {
     const loadUsers = async () => {
         try {
             const data = await userService.getUsers();
-            setUsers(data);
+            setUsers(data || []);
         } catch (e) {
             console.error('Failed to load users', e);
+            setUsers([]);
         }
     };
 
@@ -90,9 +91,10 @@ export const OSDetailsScreen = () => {
     const fetchCatalogo = async () => {
         try {
             const data = await osService.listTiposPeca();
-            setCatalogo(data);
+            setCatalogo(data || []);
         } catch (error) {
             console.error('Failed to load catalog:', error);
+            setCatalogo([]);
         }
     };
 
@@ -453,7 +455,7 @@ export const OSDetailsScreen = () => {
                                     dropdownIconColor={theme.colors.primary}
                                 >
                                     <Picker.Item label="Selecione..." value={null} style={{ color: '#666' }} />
-                                    {users.map(u => (
+                                    {Array.isArray(users) && users.map(u => (
                                         <Picker.Item key={u.id} label={u.name || u.email} value={u.id} style={{ color: '#000' }} />
                                     ))}
                                 </Picker>

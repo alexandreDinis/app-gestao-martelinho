@@ -51,7 +51,7 @@ export const ClienteModel = {
      */
     async getById(id: number): Promise<LocalCliente | null> {
         return await databaseService.getFirst<LocalCliente>(
-            `SELECT * FROM clientes WHERE id = ?`,
+            `SELECT * FROM clientes WHERE id = ? AND deleted_at IS NULL`,
             [id]
         );
     },
@@ -62,12 +62,12 @@ export const ClienteModel = {
     async getByServerId(serverId: number, empresaId?: number): Promise<LocalCliente | null> {
         if (empresaId !== undefined && empresaId !== 0) {
             return await databaseService.getFirst<LocalCliente>(
-                `SELECT * FROM clientes WHERE empresa_id = ? AND server_id = ? LIMIT 1`,
+                `SELECT * FROM clientes WHERE empresa_id = ? AND server_id = ? AND deleted_at IS NULL LIMIT 1`,
                 [empresaId, serverId]
             );
         }
         return await databaseService.getFirst<LocalCliente>(
-            `SELECT * FROM clientes WHERE server_id = ?`,
+            `SELECT * FROM clientes WHERE server_id = ? AND deleted_at IS NULL`,
             [serverId]
         );
     },
@@ -78,12 +78,12 @@ export const ClienteModel = {
     async getByLocalId(localId: string, empresaId?: number): Promise<LocalCliente | null> {
         if (empresaId !== undefined && empresaId !== 0) {
             return await databaseService.getFirst<LocalCliente>(
-                `SELECT * FROM clientes WHERE empresa_id = ? AND local_id = ? LIMIT 1`,
+                `SELECT * FROM clientes WHERE empresa_id = ? AND local_id = ? AND deleted_at IS NULL LIMIT 1`,
                 [empresaId, localId]
             );
         }
         return await databaseService.getFirst<LocalCliente>(
-            `SELECT * FROM clientes WHERE local_id = ?`,
+            `SELECT * FROM clientes WHERE local_id = ? AND deleted_at IS NULL`,
             [localId]
         );
     },

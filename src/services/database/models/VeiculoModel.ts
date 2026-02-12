@@ -13,7 +13,7 @@ export const VeiculoModel = {
      */
     async getById(id: number): Promise<LocalVeiculo | null> {
         return await databaseService.getFirst<LocalVeiculo>(
-            `SELECT * FROM veiculos_os WHERE id = ?`,
+            `SELECT * FROM veiculos_os WHERE id = ? AND deleted_at IS NULL`,
             [id]
         );
     },
@@ -23,7 +23,7 @@ export const VeiculoModel = {
      */
     async getByLocalId(localId: string): Promise<LocalVeiculo | null> {
         return await databaseService.getFirst<LocalVeiculo>(
-            `SELECT * FROM veiculos_os WHERE local_id = ?`,
+            `SELECT * FROM veiculos_os WHERE local_id = ? AND deleted_at IS NULL`,
             [localId]
         );
     },
@@ -33,7 +33,7 @@ export const VeiculoModel = {
      */
     async getByServerId(serverId: number): Promise<LocalVeiculo | null> {
         return await databaseService.getFirst<LocalVeiculo>(
-            `SELECT * FROM veiculos_os WHERE server_id = ?`,
+            `SELECT * FROM veiculos_os WHERE server_id = ? AND deleted_at IS NULL`,
             [serverId]
         );
     },
@@ -43,7 +43,7 @@ export const VeiculoModel = {
      */
     async getByOSId(osId: number): Promise<LocalVeiculo[]> {
         return await databaseService.runQuery<LocalVeiculo>(
-            `SELECT * FROM veiculos_os WHERE os_id = ? AND sync_status != 'PENDING_DELETE'`,
+            `SELECT * FROM veiculos_os WHERE os_id = ? AND deleted_at IS NULL AND sync_status != 'PENDING_DELETE'`,
             [osId]
         );
     },
@@ -54,7 +54,7 @@ export const VeiculoModel = {
     async searchByPlaca(placa: string): Promise<LocalVeiculo[]> {
         return await databaseService.runQuery<LocalVeiculo>(
             `SELECT * FROM veiculos_os 
-       WHERE placa LIKE ? AND sync_status != 'PENDING_DELETE'
+       WHERE placa LIKE ? AND deleted_at IS NULL AND sync_status != 'PENDING_DELETE'
        ORDER BY created_at DESC
        LIMIT 20`,
             [`%${placa}%`]
@@ -66,7 +66,7 @@ export const VeiculoModel = {
      */
     async verificarPlaca(placa: string): Promise<{ existe: boolean; veiculoExistente?: LocalVeiculo }> {
         const veiculo = await databaseService.getFirst<LocalVeiculo>(
-            `SELECT * FROM veiculos_os WHERE placa = ? ORDER BY created_at DESC LIMIT 1`,
+            `SELECT * FROM veiculos_os WHERE placa = ? AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1`,
             [placa.toUpperCase()]
         );
 
@@ -131,9 +131,9 @@ export const VeiculoModel = {
         const id = await databaseService.runInsert(
             `INSERT INTO veiculos_os (
         local_id, server_id, version, os_id, os_local_id,
-        placa, modelo, cor, valor_total, sync_status, updated_at, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_CREATE', ?, ?)`,
-            insertParams
+        placa, modelo, cor, valor_total, sync_status, updated_at, created_at, deleted_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_CREATE', ?, ?, ?)`,
+            [...insertParams, null]
         );
 
         await this.addToSyncQueue(localId, 'CREATE', data);
@@ -174,9 +174,9 @@ export const VeiculoModel = {
             await databaseService.runUpdate(
                 `UPDATE veiculos_os SET
           server_id = ?, placa = ?, modelo = ?, cor = ?, valor_total = ?,
-          sync_status = 'SYNCED', updated_at = ?
+          sync_status = 'SYNCED', updated_at = ?, deleted_at = ?
          WHERE id = ?`,
-                [veiculo.id, veiculo.placa, veiculo.modelo, veiculo.cor, veiculo.valorTotal, now, existing.id]
+                [veiculo.id, veiculo.placa, veiculo.modelo, veiculo.cor, veiculo.valorTotal, now, veiculo.deletedAt || null, existing.id]
             );
             localVeiculo = (await this.getById(existing.id))!;
         } else {
@@ -184,9 +184,9 @@ export const VeiculoModel = {
             const id = await databaseService.runInsert(
                 `INSERT INTO veiculos_os (
           local_id, server_id, version, os_id, placa, modelo, cor, valor_total,
-          sync_status, updated_at, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'SYNCED', ?, ?)`,
-                [localId, veiculo.id, 1, osLocalId, veiculo.placa, veiculo.modelo, veiculo.cor, veiculo.valorTotal, now, now]
+          sync_status, updated_at, created_at, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'SYNCED', ?, ?, ?)`,
+                [localId, veiculo.id, 1, osLocalId, veiculo.placa, veiculo.modelo, veiculo.cor, veiculo.valorTotal, now, now, veiculo.deletedAt || null]
             );
             localVeiculo = (await this.getById(id))!;
         }

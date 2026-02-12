@@ -13,7 +13,7 @@ export const PecaModel = {
      */
     async getById(id: number): Promise<LocalPeca | null> {
         return await databaseService.getFirst<LocalPeca>(
-            `SELECT * FROM pecas_os WHERE id = ?`,
+            `SELECT * FROM pecas_os WHERE id = ? AND deleted_at IS NULL`,
             [id]
         );
     },
@@ -23,7 +23,7 @@ export const PecaModel = {
      */
     async getByLocalId(localId: string): Promise<LocalPeca | null> {
         return await databaseService.getFirst<LocalPeca>(
-            `SELECT * FROM pecas_os WHERE local_id = ?`,
+            `SELECT * FROM pecas_os WHERE local_id = ? AND deleted_at IS NULL`,
             [localId]
         );
     },
@@ -33,7 +33,7 @@ export const PecaModel = {
      */
     async getByServerId(serverId: number): Promise<LocalPeca | null> {
         return await databaseService.getFirst<LocalPeca>(
-            `SELECT * FROM pecas_os WHERE server_id = ?`,
+            `SELECT * FROM pecas_os WHERE server_id = ? AND deleted_at IS NULL`,
             [serverId]
         );
     },
@@ -43,7 +43,7 @@ export const PecaModel = {
      */
     async getByVeiculoId(veiculoId: number): Promise<LocalPeca[]> {
         return await databaseService.runQuery<LocalPeca>(
-            `SELECT * FROM pecas_os WHERE veiculo_id = ? AND sync_status != 'PENDING_DELETE'`,
+            `SELECT * FROM pecas_os WHERE veiculo_id = ? AND deleted_at IS NULL AND sync_status != 'PENDING_DELETE'`,
             [veiculoId]
         );
     },
@@ -108,8 +108,8 @@ export const PecaModel = {
             `INSERT INTO pecas_os (
         local_id, server_id, version, veiculo_id, veiculo_local_id,
         tipo_peca_id, nome_peca, valor_cobrado, descricao,
-        sync_status, updated_at, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_CREATE', ?, ?)`,
+        sync_status, updated_at, created_at, deleted_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_CREATE', ?, ?, ?)`,
             [
                 localId,
                 null, // server_id
@@ -121,7 +121,8 @@ export const PecaModel = {
                 data.valorCobrado || 0,
                 data.descricao || null,
                 now,
-                now
+                now,
+                null // deleted_at
             ]
         );
 
@@ -161,9 +162,9 @@ export const PecaModel = {
             await databaseService.runUpdate(
                 `UPDATE pecas_os SET
           server_id = ?, tipo_peca_id = ?, nome_peca = ?, valor_cobrado = ?, descricao = ?,
-          sync_status = 'SYNCED', updated_at = ?
+          sync_status = 'SYNCED', updated_at = ?, deleted_at = ?
          WHERE id = ?`,
-                [peca.id, tipoPecaId, peca.nomePeca || existing.nome_peca, peca.valorCobrado, peca.descricao, now, existing.id]
+                [peca.id, tipoPecaId, peca.nomePeca || existing.nome_peca, peca.valorCobrado, peca.descricao, now, peca.deletedAt || null, existing.id]
             );
             return (await this.getById(existing.id))!;
         } else {
@@ -182,8 +183,8 @@ export const PecaModel = {
                 `INSERT INTO pecas_os (
           local_id, server_id, version, veiculo_id, veiculo_local_id,
           tipo_peca_id, nome_peca, valor_cobrado, descricao,
-          sync_status, updated_at, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'SYNCED', ?, ?)`,
+          sync_status, updated_at, created_at, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'SYNCED', ?, ?, ?)`,
                 [
                     localId,
                     peca.id,
@@ -195,7 +196,8 @@ export const PecaModel = {
                     peca.valorCobrado,
                     peca.descricao,
                     now,
-                    now
+                    now,
+                    peca.deletedAt || null
                 ]
             );
             return (await this.getById(id))!;

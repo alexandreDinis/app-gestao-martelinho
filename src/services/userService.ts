@@ -1,7 +1,7 @@
 import { UserModel } from './database/models/UserModel';
 import { OfflineDebug } from '../utils/OfflineDebug';
 import { Logger } from './Logger';
-import api from './api';
+import api, { safeRequest } from './api';
 import { User } from '../types';
 import { authService } from './authService';
 
@@ -12,27 +12,32 @@ export const userService = {
         const session = await authService.getSessionClaims();
         const empresaId = session?.empresaId || 0;
 
-        if (isOnline) {
-            try {
-                Logger.info('[UserService] Fetching technicians from API');
-                const response = await api.get<User[]>('/users/equipe');
-
-                // Cache local with empresaId context
-                if (response.data.length > 0) {
-                    await UserModel.upsertBatch(response.data, empresaId);
-                }
-
-                return response.data;
-            } catch (error) {
-                Logger.error('[UserService] API fetch failed, falling back to local', error);
+        const fetchLocal = async () => {
+            Logger.info(`[UserService] Fetching users from Local DB for Empresa ${empresaId}`);
+            if (empresaId > 0) {
+                return await UserModel.getAllByEmpresa(empresaId);
             }
+            return await UserModel.getAll();
+        };
+
+        if (isOnline) {
+            return await safeRequest(
+                async () => {
+                    Logger.info('[UserService] Fetching technicians from API');
+                    const response = await api.get<User[]>('/users/equipe');
+
+                    // Upsert side-effect
+                    if (response.data && response.data.length > 0) {
+                        await UserModel.upsertBatch(response.data, empresaId);
+                    }
+                    return response;
+                },
+                fetchLocal,
+                'UserService.getUsers'
+            );
         }
 
-        Logger.info(`[UserService] Fetching users from Local DB for Empresa ${empresaId}`);
-        if (empresaId > 0) {
-            return await UserModel.getAllByEmpresa(empresaId);
-        }
-        return await UserModel.getAll();
+        return await fetchLocal();
     },
 
     getMe: async (): Promise<User> => {

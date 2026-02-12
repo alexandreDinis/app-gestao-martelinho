@@ -1,4 +1,4 @@
-import api from './api';
+import api, { safeRequest } from './api';
 import { OSModel } from './database/models/OSModel';
 import { Logger } from './Logger';
 import { OfflineDebug } from '../utils/OfflineDebug';
@@ -21,59 +21,58 @@ export const osService = {
         const { isConnected, isInternetReachable } = await OfflineDebug.checkConnectivity();
         const isOnline = isConnected && isInternetReachable && !OfflineDebug.isForceOffline();
 
-        // 1. Fallback Local (Offline) if forced offline or no connection logic wrapper
-        // But for consistency with listOS, we might prefer local-first or hybrid.
-        // Let's stick to: Try API if online, else Local.
+        const fetchLocal = async () => {
+            Logger.info('[OSService] Fetching clients from Local DB');
+            const { ClienteModel } = require('./database/models/ClienteModel');
+            const localClients = await ClienteModel.search(filtros?.termo || '');
+
+            return localClients.map((c: any) => ({
+                id: c.server_id || c.id,
+                localId: c.local_id,
+                razaoSocial: c.razao_social,
+                nomeFantasia: c.nome_fantasia,
+                cnpj: c.cnpj,
+                cpf: c.cpf,
+                tipoPessoa: c.tipo_pessoa,
+                contato: c.contato,
+                email: c.email,
+                status: c.status,
+                logradouro: c.logradouro,
+                numero: c.numero,
+                complemento: c.complemento,
+                bairro: c.bairro,
+                cidade: c.cidade,
+                estado: c.estado,
+                cep: c.cep,
+                local_id: c.local_id
+            }));
+        };
 
         if (isOnline) {
-            try {
-                Logger.info('[OSService] Fetching clients from API');
-                const params = new URLSearchParams();
-                if (filtros) {
-                    Object.entries(filtros).forEach(([key, value]) => {
-                        if (value) params.append(key, value);
-                    });
-                }
-                const response = await api.get<Cliente[]>(`/clientes?${params.toString()}`);
+            return await safeRequest(
+                async () => {
+                    Logger.info('[OSService] Fetching clients from API');
+                    const params = new URLSearchParams();
+                    if (filtros) {
+                        Object.entries(filtros).forEach(([key, value]) => {
+                            if (value) params.append(key, value);
+                        });
+                    }
+                    const response = await api.get<Cliente[]>(`/clientes?${params.toString()}`);
 
-                // Optional: Background sync/upsert to keep local DB fresh
-                // This ensures the next offline usage has this data.
-                // Fire and forget or await? Safer to await if we want consistency now.
-                const { ClienteModel } = require('./database/models/ClienteModel');
-                await ClienteModel.upsertBatch(response.data);
-
-                return response.data;
-            } catch (error) {
-                Logger.error('[OSService] API client fetch failed, falling back to local', error);
-            }
+                    // Cache side-effect
+                    if (response.data) {
+                        const { ClienteModel } = require('./database/models/ClienteModel');
+                        await ClienteModel.upsertBatch(response.data);
+                    }
+                    return response;
+                },
+                fetchLocal,
+                'OSService.listClientes'
+            );
         }
 
-        // 2. Fetch from Local DB
-        Logger.info('[OSService] Fetching clients from Local DB');
-        const { ClienteModel } = require('./database/models/ClienteModel');
-        const localClients = await ClienteModel.search(filtros?.termo || '');
-
-        // Map local format to API format if needed (though they share Cliente interface mostly)
-        return localClients.map((c: any) => ({
-            id: c.server_id || c.id, // Prefer server_id for compatibility
-            localId: c.local_id,
-            razaoSocial: c.razao_social,
-            nomeFantasia: c.nome_fantasia,
-            cnpj: c.cnpj,
-            cpf: c.cpf,
-            tipoPessoa: c.tipo_pessoa,
-            contato: c.contato,
-            email: c.email,
-            status: c.status,
-            logradouro: c.logradouro,
-            numero: c.numero,
-            complemento: c.complemento,
-            bairro: c.bairro,
-            cidade: c.cidade,
-            estado: c.estado,
-            cep: c.cep,
-            local_id: c.local_id
-        }));
+        return await fetchLocal();
     },
 
     // --- Ordem de Serviço (Core) ---
@@ -209,7 +208,6 @@ export const osService = {
     getOSById: async (id: number | string): Promise<OrdemServico> => {
         Logger.info('[OSService] getOSById', { id });
 
-        // 🛡️ Data Isolation
         const { authService } = require('./authService');
         const session = await authService.getSessionClaims();
 
@@ -220,36 +218,35 @@ export const osService = {
         const { isConnected, isInternetReachable } = await OfflineDebug.checkConnectivity();
         const isOnline = isConnected && isInternetReachable && !OfflineDebug.isForceOffline();
 
-        // 1. Online-First: buscar da API para garantir dados frescos (peças, veículos, etc.)
-        if (isOnline) {
-            try {
-                Logger.info('[OSService] Fetching OS from API (online-first)', { id });
-                const response = await api.get<OrdemServico>(`/ordens-servico/${id}`);
-
-                // Salvar no cache local para acesso offline futuro
-                const localOS = await OSModel.upsertFromServer(response.data, session.empresaId);
-
-                Logger.info('[OSService] OS fetched from API and cached locally');
-                return await OSModel.toApiFormat(localOS);
-            } catch (error) {
-                Logger.error('[OSService] API fetch failed for getOSById, falling back to local', error);
-                // Continua para fallback local
-            }
-        }
-
-        // 2. Fallback: Ler do cache local (JOIN Otimizado)
-        try {
+        const fetchLocal = async () => {
+            Logger.info('[OSService] Attempting to find OS locally (fallback)');
             const localFull = await OSModel.getByIdFull(id, session.empresaId);
+            if (localFull) return localFull;
+            throw new Error('Ordem de serviço não encontrada no banco local.');
+        };
 
-            if (localFull) {
-                Logger.info('[OSService] Found full OS locally (JOIN fallback)');
-                return localFull;
-            }
-        } catch (error) {
-            Logger.error('[OSService] Error reading local OS', error);
+        if (isOnline) {
+            return await safeRequest(
+                async () => {
+                    Logger.info('[OSService] Fetching OS from API (online-first)', { id });
+                    const response = await api.get<OrdemServico>(`/ordens-servico/${id}`);
+
+                    if (response.data) {
+                        await OSModel.upsertFromServer(response.data, session.empresaId);
+                    }
+
+                    // We return converted local format to ensure UI consistency
+                    // OR we could return response.data directly. 
+                    // To follow the plan "return local always", we'll do:
+                    const localOS = await OSModel.upsertFromServer(response.data, session.empresaId);
+                    return { data: await OSModel.toApiFormat(localOS) };
+                },
+                fetchLocal,
+                'OSService.getOSById'
+            );
         }
 
-        throw new Error('Ordem de serviço não encontrada.');
+        return await fetchLocal();
     },
 
     updateStatus: async (id: number, status: OSStatus): Promise<OrdemServico> => {
@@ -376,6 +373,10 @@ export const osService = {
             try {
                 Logger.info('[OSService] Attempting API addVeiculo (online mode)');
                 const response = await api.post<any>('/ordens-servico/veiculos', data);
+
+                if (!response || !response.data) {
+                    throw new Error('Invalid API response for addVeiculo');
+                }
 
                 // DATA É A OS (OrdemServicoResponse), NÃO O VEÍCULO!
                 // Precisa achar o veículo criado. Na via online, o último veículo costuma ser o adicionado.

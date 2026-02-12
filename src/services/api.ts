@@ -142,3 +142,26 @@ api.interceptors.response.use(
 );
 
 export default api;
+
+/**
+ * Standard helper for robust offline-first requests.
+ * 1. Tenta API
+ * 2. Verifica se a resposta é válida
+ * 3. Se falhar ou for inválida, executa fallback (Geralmente ler do banco local)
+ */
+export async function safeRequest<T>(
+    apiCall: () => Promise<{ data: T }>,
+    fallback: () => Promise<T>,
+    context: string = 'API'
+): Promise<T> {
+    try {
+        const response = await apiCall();
+        if (response && response.data !== undefined && response.data !== null) {
+            return response.data;
+        }
+        throw new Error(`[${context}] Invalid or empty response data`);
+    } catch (error) {
+        // console.log(`[${context}] Falling back to local/manual logic due to:`, error instanceof Error ? error.message : error);
+        return await fallback();
+    }
+}
