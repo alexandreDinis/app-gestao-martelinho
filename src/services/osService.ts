@@ -82,7 +82,7 @@ export const osService = {
      * - Se offline: salva localmente (incluindo hierarquia) e adiciona à fila
      */
     createOS: async (data: CreateOSRequest): Promise<OrdemServico> => {
-        Logger.info('[OSService] Creating OS', { clienteId: data.clienteId, data: data.data });
+        Logger.info('[OSService] Creating OS (Offline-First Pattern)', { clienteId: data.clienteId, data: data.data });
 
         // 🛡️ Secure Context
         const { authService } = require('./authService');
@@ -93,64 +93,39 @@ export const osService = {
         }
 
         const empresaId = session.empresaId;
-
-        // 🔧 DEBUG: Verificar conectividade (respeita modo forceOffline)
         const { isConnected, isInternetReachable } = await OfflineDebug.checkConnectivity();
-        const isOnline = isConnected && isInternetReachable;
+        const isOnline = isConnected && isInternetReachable && !OfflineDebug.isForceOffline();
 
-        Logger.debug('[OSService] Network status', { isOnline, isConnected, isInternetReachable });
+        // 1. ALWAYS Create Locally First (Optimistic) -> Queues for Sync Automatically
+        const localOS = await OSModel.create({ ...data, empresaId }, 'PENDING_CREATE');
+        Logger.info('[OSService] OS created locally (Optimistic)', { localId: localOS.local_id, queued: true });
 
+        // 2. If Online, Try to Sync Immediately
         if (isOnline) {
-            // Tentar criar na API primeiro
             try {
-                Logger.info('[OSService] Attempting API create (online mode)');
+                Logger.info('[OSService] Attempting immediate API sync...');
+                // Note: We send the original data. The backend creates a new ID.
                 const response = await api.post<OrdemServico>('/ordens-servico', data);
 
-                // Salvar no cache local como SYNCED
-                await OSModel.upsertFromServer(response.data, empresaId);
+                // 3. Success: Attach Server ID and Clear Queue
+                Logger.info('[OSService] Immediate Sync Success. Attaching Server ID:', response.data.id);
+                await OSModel.attachServerId(localOS.local_id, response.data.id, response.data.updatedAt);
 
-                Logger.info('[OSService] OS created successfully via API', { id: response.data.id });
+                // Return server data (most up to date)
                 return response.data;
             } catch (error) {
-                Logger.warn('[OSService] API create failed, falling back to offline mode', error);
-                // Se falhar, continua para modo offline
+                Logger.warn('[OSService] Immediate sync failed, staying in offline mode (item is already queued)', error);
+                // No action needed: It is already in the queue from Step 1.
             }
         }
 
-        // Modo offline: salvar localmente e adicionar à fila
-        Logger.info('[OSService] Creating OS in offline mode');
-        const localOS = await OSModel.create({ ...data, empresaId }, 'PENDING_CREATE');
-
-        Logger.info('[OSService] OS created locally', {
-            localId: localOS.local_id,
-            queuedForSync: true
-        });
-
-        // 🔧 Trigger immediate sync
+        // 4. Trigger Background Sync (if we didn't just try and fail, or just to be sure)
         if (!OfflineDebug.isForceOffline()) {
-            import('./SyncService').then(m => m.SyncService.processQueue('OS.create_fallback').catch(e => console.error(e)));
+            import('./SyncService').then(m => m.SyncService.processQueue('OS.create_optimistic').catch(e => console.error(e)));
         }
 
-        // Converter para formato da API para retornar
-        // Note: veiculos virão vazios pois ainda não foram adicionados
-        return {
-            id: localOS.id, // ID local temporário
-            data: localOS.data,
-            status: localOS.status as OSStatus,
-            cliente: {} as any, // Será resolvido quando necessário
-            valorTotal: localOS.valor_total || 0,
-            veiculos: [],
-            tipoDesconto: localOS.tipo_desconto as any,
-            valorDesconto: localOS.valor_desconto || undefined,
-            valorTotalSemDesconto: localOS.valor_total || 0,
-            valorTotalComDesconto: localOS.valor_total || 0,
-            dataVencimento: localOS.data_vencimento || undefined,
-            atrasado: false,
-            usuarioId: session.userId || 0,
-            usuarioNome: undefined,
-            usuarioEmail: '',
-            empresaId: empresaId
-        };
+        // 5. Return Local Data (converted to API format)
+        return await OSModel.toApiFormat(localOS);
     },
 
     // --- In-flight Promise ---
@@ -179,6 +154,8 @@ export const osService = {
             userId: userId,
             includeAllUsers: !!role?.includes('ADMIN')
         });
+
+
 
         return localOS;
     },
@@ -285,6 +262,10 @@ export const osService = {
         if (!localUpdated) {
             throw new Error('OS não encontrada localmente para atualização de status.');
         }
+
+        // 🚀 Event-Based Refresh: Notify listeners (OSListScreen) to refresh immediately
+        const { DeviceEventEmitter } = require('react-native');
+        DeviceEventEmitter.emit('osStatusChanged', { id, status });
 
         // Tentar sincronizar imediatamente se estiver online
         if (!OfflineDebug.isForceOffline()) {

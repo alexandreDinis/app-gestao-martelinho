@@ -1,4 +1,6 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
+import NetInfo from '@react-native-community/netinfo';
+import Toast from 'react-native-toast-message';
 import { View, Text, TouchableOpacity, ScrollView, RefreshControl, TextInput, Alert } from 'react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../contexts/AuthContext';
@@ -110,10 +112,10 @@ export const DashboardScreen = () => {
         try {
             const data = await osService.listOS();
             setOsList(data);
-            // Check updates on fetch (with debounce if not forced)
-            if (force) {
-                checkUpdates(true, caller);
-            }
+
+            // 🔄 ALWAYS check local pending count on fetch to stay consistent
+            // But only trigger expensive polling if forced or on smart polling schedule
+            checkUpdates(force, caller);
         } catch (error) {
             console.error('Failed to load OS:', error);
         } finally {
@@ -128,6 +130,35 @@ export const DashboardScreen = () => {
             checkNow('Dashboard.focus', false, FOCUS_DEBOUNCE_MS);
         }, [checkNow])
     );
+
+    // 📡 Network Restoration Listener
+    useEffect(() => {
+        const unsubscribe = NetInfo.addEventListener(state => {
+            if (state.isConnected && state.isInternetReachable) {
+                // Delay to give app time to stabilize
+                setTimeout(async () => {
+                    try {
+                        const { SyncService } = await import('../services/SyncService');
+                        const pending = await SyncService.getLocalPendingCount();
+                        if (pending > 0) {
+                            Toast.show({
+                                type: 'info',
+                                text1: 'Sincronização pendente',
+                                text2: `Há ${pending} item(s) offline aguardando envio.`,
+                                visibilityTime: 4000,
+                            });
+                            // Optional: trigger background process
+                            SyncService.processQueue('network_restored');
+                        }
+                    } catch (error) {
+                        console.error('[Dashboard] Network listener error:', error);
+                    }
+                }, 2000);
+            }
+        });
+
+        return () => unsubscribe();
+    }, []);
 
     const onRefresh = () => {
         setRefreshing(true);
@@ -259,6 +290,34 @@ export const DashboardScreen = () => {
                     <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.colors.primary} />
                 }
             >
+                {/* Empty Database Banner */}
+                {totalOSCount === 0 && totalVehiclesCount === 0 && (
+                    <TouchableOpacity
+                        onPress={handleSync}
+                        style={{
+                            backgroundColor: theme.colors.primary,
+                            padding: 16,
+                            borderRadius: 8,
+                            marginBottom: 24,
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            elevation: 4,
+                            shadowColor: theme.colors.primary,
+                            shadowOffset: { width: 0, height: 2 },
+                            shadowOpacity: 0.3,
+                            shadowRadius: 4
+                        }}
+                    >
+                        <View style={{ marginRight: 12, backgroundColor: '#000', padding: 8, borderRadius: 20 }}>
+                            <Activity size={24} color={theme.colors.primary} />
+                        </View>
+                        <View style={{ flex: 1 }}>
+                            <Text style={{ color: '#000', fontWeight: '900', fontSize: 14, marginBottom: 2 }}>BANCO DE DADOS VAZIO</Text>
+                            <Text style={{ color: '#000', fontSize: 12 }}>Toque aqui para baixar os dados do servidor.</Text>
+                        </View>
+                    </TouchableOpacity>
+                )}
+
                 {/* Sync Status Card */}
                 <Card style={{ marginBottom: 16 }} padding="md">
                     <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -269,15 +328,12 @@ export const DashboardScreen = () => {
                             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                                 {isSyncing ? (
                                     <Text style={{ color: theme.colors.textMuted, fontSize: 10 }}>Sincronizando...</Text>
-                                ) : pendingCount > 0 ? (
-                                    <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(239, 68, 68, 0.2)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
-                                        <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: theme.colors.error, marginRight: 4 }} />
-                                        <Text style={{ color: theme.colors.error, fontSize: 10, fontWeight: '700' }}>{pendingCount} PENDÊNCIAS</Text>
-                                    </View>
-                                ) : syncStatus === 'BOOTSTRAP_REQUIRED' ? (
-                                    <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(59, 130, 246, 0.2)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
-                                        <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#3b82f6', marginRight: 4 }} />
-                                        <Text style={{ color: '#3b82f6', fontSize: 10, fontWeight: '700' }}>PRIMEIRA SINCRONIA NECESSÁRIA</Text>
+                                ) : (pendingCount > 0 || (totalOSCount === 0 && totalVehiclesCount === 0)) ? (
+                                    <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: pendingCount > 0 ? 'rgba(239, 68, 68, 0.2)' : 'rgba(59, 130, 246, 0.2)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
+                                        <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: pendingCount > 0 ? theme.colors.error : '#3b82f6', marginRight: 4 }} />
+                                        <Text style={{ color: pendingCount > 0 ? theme.colors.error : '#3b82f6', fontSize: 10, fontWeight: '700' }}>
+                                            {pendingCount > 0 ? `${pendingCount} PENDÊNCIAS` : 'SINCRONIZAÇÃO NECESSÁRIA'}
+                                        </Text>
                                     </View>
                                 ) : syncStatus === 'UPDATES_AVAILABLE' ? (
                                     <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(212, 175, 55, 0.2)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
@@ -315,7 +371,7 @@ export const DashboardScreen = () => {
                                 <View style={{ width: 0 }} />
                             )}
                             <Text style={{ color: isSyncing ? theme.colors.primary : '#000', fontWeight: '900', fontSize: 10 }}>
-                                {isSyncing ? 'SYNCING...' : (syncStatus === 'BOOTSTRAP_REQUIRED' ? 'BAIXAR TUDO' : 'SINCRONIZAR')}
+                                {isSyncing ? 'SYNCING...' : (syncStatus === 'BOOTSTRAP_REQUIRED' || (totalOSCount === 0 && totalVehiclesCount === 0) ? 'BAIXAR TUDO' : 'SINCRONIZAR')}
                             </Text>
                         </TouchableOpacity>
                     </View>

@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useMemo } from 'react';
-import { View, Text, FlatList, TouchableOpacity, RefreshControl, TextInput, Modal, ScrollView, Alert, ActivityIndicator } from 'react-native';
+import { View, Text, FlatList, TouchableOpacity, RefreshControl, TextInput, Modal, ScrollView, Alert, ActivityIndicator, DeviceEventEmitter } from 'react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { FileText, Calendar, DollarSign, Search, Clock, CheckCircle, Ban, Plus, User, ChevronRight, Trash2 } from 'lucide-react-native';
 import { theme } from '../theme';
@@ -26,6 +26,7 @@ export const OSListScreen = () => {
     const [activeTab, setActiveTab] = useState<TabType>('iniciadas');
     const [searchTerm, setSearchTerm] = useState('');
     const [dateFilter, setDateFilter] = useState('');
+    const [pendingSyncCount, setPendingSyncCount] = useState(0);
 
     // 🔄 SMART POLLING
     const { checkNow, FOCUS_DEBOUNCE_MS } = useSmartPolling();
@@ -46,24 +47,24 @@ export const OSListScreen = () => {
         );
     }, [clientes, modalSearchTerm]);
 
-    const fetchOrdens = async () => {
+    const fetchOrdens = useCallback(async (silent = false) => {
         try {
-            setLoading(true);
+            if (!silent) setLoading(true);
             // Apenas carrega do banco local (offline first)
             const data = await osService.listOS();
             setOrdens(data);
         } catch (error) {
             console.error('Failed to load OS:', error);
         } finally {
-            setLoading(false);
+            if (!silent) setLoading(false);
         }
-    };
+    }, []);
 
     const handleRefresh = async () => {
         setLoading(true);
         try {
             await checkNow('OSListScreen.refresh', true, 0); // Force sync
-            await fetchOrdens();
+            await fetchOrdens(true);
         } catch (error) {
             console.error('Sync failed:', error);
             Alert.alert('Erro', 'Falha na sincronização. Verifique sua conexão.');
@@ -81,12 +82,45 @@ export const OSListScreen = () => {
         }
     };
 
+    const checkPendingSync = useCallback(async () => {
+        try {
+            const count = await SyncService.getLocalPendingCount();
+            setPendingSyncCount(count);
+        } catch (error) {
+            console.error('Failed to check pending sync:', error);
+        }
+    }, []);
+
     useFocusEffect(
         useCallback(() => {
             fetchOrdens();
+            checkPendingSync();
             checkNow('OSList.focus', false, FOCUS_DEBOUNCE_MS);
-        }, [checkNow])
+
+            // Poll for local changes (e.g. background sync updates) every 5s
+            const interval = setInterval(() => {
+                fetchOrdens(true);
+                checkPendingSync();
+            }, 5000);
+
+            return () => {
+                clearInterval(interval);
+            };
+        }, [fetchOrdens, checkNow, checkPendingSync])
     );
+
+    // 🚀 Event Listener: Persistent (doesn't unmount on focus loss)
+    React.useEffect(() => {
+        const subscription = DeviceEventEmitter.addListener('osStatusChanged', () => {
+            console.log('[OSListScreen] 🔄 Received osStatusChanged event, refreshing list...');
+            fetchOrdens(true);
+            checkPendingSync();
+        });
+
+        return () => {
+            subscription.remove();
+        };
+    }, [fetchOrdens, checkPendingSync]);
 
     const filteredOrdens = useMemo(() => {
         return ordens.filter(os => {
@@ -249,6 +283,19 @@ export const OSListScreen = () => {
                         <Text style={{ color: theme.colors.primary, fontSize: 20, fontWeight: '900', marginLeft: 8, letterSpacing: 2 }}>
                             ORDENS DE SERVIÇO
                         </Text>
+                        {pendingSyncCount > 0 && (
+                            <View style={{
+                                backgroundColor: theme.colors.error,
+                                borderRadius: 10,
+                                paddingHorizontal: 6,
+                                paddingVertical: 2,
+                                marginLeft: 8,
+                            }}>
+                                <Text style={{ color: 'white', fontSize: 10, fontWeight: 'bold' }}>
+                                    {pendingSyncCount}
+                                </Text>
+                            </View>
+                        )}
                     </View>
 
                     {/* Offline Toggle */}

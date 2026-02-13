@@ -42,6 +42,15 @@ export const OSModel = {
     },
 
     /**
+     * Buscar OS que não têm server_id (apenas locais)
+     */
+    async getUnsyncedLocal(): Promise<LocalOS[]> {
+        return await databaseService.runQuery<LocalOS>(
+            `SELECT * FROM ordens_servico WHERE server_id IS NULL AND deleted_at IS NULL AND sync_status != 'PENDING_DELETE'`
+        );
+    },
+
+    /**
      * Obter contagem total de OS
      */
     async getCount(): Promise<number> {
@@ -232,12 +241,12 @@ export const OSModel = {
                 p.valor_cobrado as p_valor_cobrado, p.descricao as p_descricao
             FROM ordens_servico os
             LEFT JOIN clientes c ON (os.cliente_id = c.id OR os.cliente_local_id = c.local_id)
-            LEFT JOIN veiculos_os v ON (os.id = v.os_id OR os.local_id = v.os_local_id)
+            LEFT JOIN veiculos_os v ON (os.id = v.os_id OR os.local_id = v.os_local_id OR (os.server_id IS NOT NULL AND os.server_id = v.os_id))
             LEFT JOIN pecas_os p ON (v.id = p.veiculo_id OR v.local_id = p.veiculo_local_id)
-            WHERE (os.id = ? OR os.local_id = ?) AND os.empresa_id = ? AND os.deleted_at IS NULL
+            WHERE (os.id = ? OR os.local_id = ? OR os.server_id = ?) AND os.empresa_id = ? AND os.deleted_at IS NULL
         `;
 
-        const rows = await databaseService.runQuery<any>(query, [id, id, empresaId]);
+        const rows = await databaseService.runQuery<any>(query, [id, id, id, empresaId]);
 
         if (rows.length === 0) return null;
 
@@ -373,7 +382,7 @@ export const OSModel = {
      * Converter LocalOS para formato API (OrdemServico)
      * Resolve Cliente e Veículos
      */
-    async toApiFormat(local: LocalOS): Promise<OrdemServico> {
+    async toApiFormat(local: LocalOS, operation: 'CREATE' | 'UPDATE' = 'UPDATE'): Promise<OrdemServico> {
         const { ClienteModel } = require('./ClienteModel');
         const { VeiculoModel } = require('./VeiculoModel');
         const { PecaModel } = require('./PecaModel');
@@ -381,7 +390,7 @@ export const OSModel = {
         // Resolver Cliente
         let cliente: any = { id: 0, razaoSocial: 'Cliente não encontrado', nomeFantasia: '?' };
         if (local.cliente_id) {
-            const c = await ClienteModel.getById(local.cliente_id); // Pelo ID local
+            const c = await ClienteModel.getById(local.cliente_id);
             if (c) cliente = ClienteModel.toApiFormat(c);
         } else if (local.cliente_local_id) {
             const c = await ClienteModel.getByLocalId(local.cliente_local_id);
@@ -389,26 +398,37 @@ export const OSModel = {
         }
 
         // Resolver Veículos
-        // Buscamos pelo ID local da OS (PK), pois é isso que o os_id do veículo referencia
         const veiculos = await VeiculoModel.getByOSId(local.id);
-        console.log(`[OSModel] toApiFormat: OS Local PK ${local.id} (UUID: ${local.local_id}) has ${veiculos.length} veiculos`);
 
-        if (!local.empresa_id) {
-            throw new Error(`[OSModel.toApiFormat] OS sem empresa_id (local_id=${local.local_id}, id=${local.id})`);
+        // 🛡️ SECURITY: For CREATE operations (offline/recovery), override usuarioId with current session user
+        // This prevents "User not in company" errors if the local OS has a stale user ID
+        let usuarioId = local.usuario_id;
+        if (operation === 'CREATE') {
+            try {
+                const { authService } = require('../authService');
+                const session = await authService.getSessionClaims();
+                if (session?.userId) {
+                    usuarioId = session.userId;
+                    console.log(`[OSModel] 🛡️ toApiFormat(CREATE): Overriding usuarioId ${local.usuario_id} -> ${usuarioId}`);
+                }
+            } catch (e) {
+                console.warn('[OSModel] Failed to get session for usuarioId override', e);
+            }
         }
 
         const veiculosApi = await Promise.all(veiculos.map(async (v: LocalVeiculo) => {
             const pecas = await PecaModel.getByVeiculoId(v.id);
-            console.log(`[OSModel] toApiFormat: Veiculo Local PK ${v.id} (Placa: ${v.placa}) has ${pecas.length} pecas. Raw Pecas:`, JSON.stringify(pecas));
             const totalV = pecas.reduce((acc: number, p: LocalPeca) => acc + (p.valor_cobrado || 0), 0);
             return {
                 id: v.server_id || v.id,
+                localId: v.local_id,
                 placa: v.placa,
                 modelo: v.modelo || '',
                 cor: v.cor || '',
                 valorTotal: totalV,
                 pecas: pecas.map((p: LocalPeca) => ({
                     id: p.server_id || p.id,
+                    localId: p.local_id,
                     tipoPecaId: p.tipo_peca_id || undefined,
                     nomePeca: p.nome_peca || '',
                     valorCobrado: p.valor_cobrado || 0,
@@ -431,19 +451,19 @@ export const OSModel = {
         return {
             id: local.server_id || local.id, // Preferência server_id se synced, senão ID local
             localId: local.local_id, // Importante para referência futura
-            cliente: cliente, // <--- ADICIONADO
+            cliente: cliente,
             empresaId: local.empresa_id,
             data: local.data,
             dataVencimento: local.data_vencimento || undefined,
             status: local.status as OSStatus,
             valorTotal: valorTotalFinal,
-            tipoDesconto: local.tipo_desconto as any, // Cast to any to avoid conflict between DB value and strict type
+            tipoDesconto: local.tipo_desconto as any,
             valorDesconto: local.valor_desconto || undefined,
-            valorTotalSemDesconto: totalPecas, // Simplificação
-            valorTotalComDesconto: valorTotalFinal, // Simplificação
-            atrasado: false, // Calcular se necessário
+            valorTotalSemDesconto: totalPecas,
+            valorTotalComDesconto: valorTotalFinal,
+            atrasado: false,
             veiculos: veiculosApi,
-            usuarioId: local.usuario_id || undefined,
+            usuarioId: usuarioId || undefined,
             usuarioNome: local.usuario_nome || undefined,
             usuarioEmail: local.usuario_email || undefined,
             syncStatus: local.sync_status
@@ -647,8 +667,9 @@ export const OSModel = {
                 const isReallyPending = await SyncQueueModel.hasPending('os', existing.local_id);
 
                 if (isReallyPending) {
-                    console.log(`[OSModel] 🛡️ Ignorando update do servidor para OS ${existing.id} (status: ${existing.sync_status}, queue: YES)`);
-                    return existing;
+                    console.log(`[OSModel] 🛡️ Has Pending Changes for OS ${existing.id}. Merging Server Data but Preserving Local Status/Version.`);
+                    // MERGE STRATEGY: Keep Local Status
+                    os.status = existing.status as OSStatus;
                 } else {
                     console.log(`[OSModel] 🧟 Zombie detected! Status ${existing.sync_status} but not in Queue. Overwriting with Server data.`);
                 }
@@ -689,12 +710,17 @@ export const OSModel = {
                 console.warn(`[OSModel] ⚠️ empresaId missing for os.id=${os.id}, using existing=${existing.empresa_id}`);
             }
 
+            // DETERMINE SYNC STATUS FOR UPDATE
+            const { SyncQueueModel } = require('./SyncQueueModel');
+            const isReallyPending = existing.sync_status !== 'SYNCED' && await SyncQueueModel.hasPending('os', existing.local_id);
+            const nextSyncStatus = isReallyPending ? existing.sync_status : 'SYNCED';
+
             await databaseService.runUpdate(
                 `UPDATE ordens_servico SET
           server_id = ?,
           cliente_id = ?, cliente_local_id = ?, data = ?, data_vencimento = ?,
           status = ?, valor_total = ?, tipo_desconto = ?, valor_desconto = ?,
-          sync_status = 'SYNCED', last_synced_at = ?, updated_at = ?,
+          sync_status = ?, last_synced_at = ?, updated_at = ?,
           usuario_id = ?, usuario_nome = ?, usuario_email = ?, empresa_id = ?,
           server_updated_at = ?, deleted_at = ?
          WHERE id = ?`,
@@ -708,6 +734,7 @@ export const OSModel = {
                     os.valorTotal,
                     os.tipoDesconto || null,
                     os.valorDesconto || null,
+                    nextSyncStatus,
                     now,
                     now,
                     os.usuarioId ?? existing.usuario_id ?? null,
@@ -785,7 +812,17 @@ export const OSModel = {
      * Atualiza campos locais e marca como PENDING_UPDATE
      */
     async update(id: number, data: Partial<LocalOS>): Promise<LocalOS | null> {
-        const existing = await this.getById(id);
+        // Resolve Local and Server ID confusion: 'id' might be a server_id coming from UI
+        // PRIORITIZE SERVER ID
+        let existing = await this.getByServerId(id);
+
+        if (existing) {
+            console.log(`[OSModel] 🔄 Resolved update(id=${id}) to Synced OS (LocalID ${existing.id})`);
+        } else {
+            existing = await this.getById(id);
+            if (existing) console.log(`[OSModel] ℹ️ Resolved update(id=${id}) to Local-Only OS`);
+        }
+
         if (!existing) return null;
 
         const now = Date.now();
@@ -798,7 +835,6 @@ export const OSModel = {
         const setClause = fields.map(f => `${f} = ?`).join(', ');
         const values = fields.map(f => (data as any)[f]);
 
-        // Adicionar campos de controle
         const finalSetClause = `${setClause}, version = ?, sync_status = CASE WHEN sync_status = 'SYNCED' THEN 'PENDING_UPDATE' ELSE sync_status END, updated_at = ?`;
         const finalValues = [...values, newVersion, now, id];
 
@@ -809,26 +845,51 @@ export const OSModel = {
 
         // Adicionar à fila de sync
         // Se já estava PENDING, o payload será substituído pelo novo (last write wins)
-        const updatedOS = await this.getById(id);
+        // Evita criar fila UPDATE se for PENDING_CREATE
+        if (existing.sync_status !== 'PENDING_CREATE') {
+            await this.addToSyncQueue(existing.local_id, 'UPDATE', data);
+        }
 
-        // Construir payload para API (apenas campos alterados ou objeto completo?)
-        // Por simplicidade e robustez, enviamos campos chave + alterados.
-        // A API espera um objeto OrdemServico ou partes dele?
-        // Vamos enviar um objeto mergeado parcial.
-        // Mas o `osService` original enviava `data` direto pro patch.
-        // Vamos replicar isso.
+        return await this.getById(id);
+    },
 
-        await this.addToSyncQueue(existing.local_id, 'UPDATE', data);
+    /**
+     * Anexar Server ID a uma OS local (Self-Healing / Pós-Create)
+     * Transacional: Define server_id, sync_status='SYNCED' e limpa erros.
+     */
+    async attachServerId(localId: string, serverId: number, serverUpdatedAt?: string): Promise<void> {
+        console.log(`[OSModel] 📎 Attaching Server ID ${serverId} to Local OS ${localId}`);
+        await this.markAsSynced(localId, serverId);
 
-        return updatedOS;
+        // Update specific timestamps if provided (markAsSynced sets last_synced_at to now)
+        if (serverUpdatedAt) {
+            await databaseService.runUpdate(
+                `UPDATE ordens_servico SET server_updated_at = ? WHERE local_id = ?`,
+                [serverUpdatedAt, localId]
+            );
+        }
     },
 
     /**
      * Atualizar status da OS
      */
     async updateStatus(id: number, status: OSStatus): Promise<LocalOS | null> {
-        const existing = await this.getById(id);
+        // Resolve Local vs Server ID
+        // PRIORITIZE SERVER ID
+        let existing = await this.getByServerId(id);
+
+        if (existing) {
+            console.log(`[OSModel] 🔄 Resolved updateStatus(id=${id}) to Synced OS (LocalID ${existing.id})`);
+        } else {
+            // Fallback: Try Local ID
+            existing = await this.getById(id);
+            if (existing) console.log(`[OSModel] ℹ️ Resolved updateStatus(id=${id}) to Local-Only OS`);
+        }
+
         if (!existing) return null;
+
+        // Use the REAL local ID for the update
+        const localId = existing.id;
 
         const now = Date.now();
         const newVersion = existing.version + 1;
@@ -840,7 +901,7 @@ export const OSModel = {
         sync_status = CASE WHEN sync_status = 'SYNCED' THEN 'PENDING_UPDATE' ELSE sync_status END,
         updated_at = ?
        WHERE id = ?`,
-            [status, newVersion, now, id]
+            [status, newVersion, now, localId]
         );
 
         // 2. Atualizar/Inserir na Fila de Sync

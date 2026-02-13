@@ -109,7 +109,11 @@ export const SyncService = {
             const globalMarkerKey = this.getMarkerKey('last_full_sync_at', baseHash, empresaId);
             const lastFullSync = await SecureStore.getItemAsync(globalMarkerKey);
 
-            // Fetch status FIRST to get serverTime (new cursor)
+            // 1. PUSH local changes first
+            await this._processQueueNoLock();
+
+            // 1.1 Fresh Server Status (Cursor) AFTER push
+            // This ensures our local version marker catches our own updates
             console.log('⏳ Fetching server status/time...');
             const statusResponse = await api.get('/sync/status', {
                 params: {
@@ -120,9 +124,6 @@ export const SyncService = {
 
             const serverTime = statusResponse.data?.serverTime;
             const serverTenantVersion = statusResponse.data?.lastTenantVersion;
-
-            // 1. PUSH
-            await this._processQueueNoLock();
 
             // 2. PULL Metadata
             try {
@@ -447,9 +448,30 @@ export const SyncService = {
         return this._processQueuePromise;
     },
 
+    async recoverZombies(): Promise<void> {
+        // console.log('[SyncService] 🧟 Checking for Zombie OS items...');
+        const unsynced = await OSModel.getUnsyncedLocal();
+        for (const os of unsynced) {
+            const hasPending = await SyncQueueModel.hasPending('os', os.local_id);
+            if (!hasPending) {
+                console.warn(`[SyncService] 🧟 Zombie OS found (ID: ${os.id}, LocalID: ${os.local_id}). Re-enqueuing...`);
+                // Re-enqueue as UPDATE to trigger self-healing (promote to CREATE)
+                await SyncQueueModel.addToQueue({
+                    entity_type: 'os',
+                    entity_local_id: os.local_id,
+                    operation: 'UPDATE',
+                    payload: JSON.stringify({})
+                });
+            }
+        }
+    },
+
     async _processQueueNoLock(caller = 'unknown'): Promise<void> {
         console.log(`📡 Processando Fila de Sync (Locked) [Caller: ${caller}]...`);
         console.log('📤 Processando fila de sincronização (Robust Sync V3 - Phased)...');
+
+        // 0. Zombie Recovery
+        await this.recoverZombies();
 
         // 1. Fetch All Pending Items
         const pendingItems = await SyncQueueModel.getAllPending();
@@ -477,60 +499,100 @@ export const SyncService = {
             return a.created_at - b.created_at; // FIFO within same type
         });
 
-        // 3. Process Loop
-        for (const item of sortedItems) {
-            // 3.1 Check Backoff
-            if (item.attempts > 0 && item.last_attempt) {
-                const backoffMs = this.calculateBackoff(item.attempts);
-                const nextRetry = item.last_attempt + backoffMs;
-                if (Date.now() < nextRetry) {
-                    console.log(`⏳ Skipping item ${item.entity_type} ${item.id} (Backoff). Retry in ${((nextRetry - Date.now()) / 1000).toFixed(0)}s`);
-                    continue;
-                }
+        // 3. Process Loop - PHASED EXECUTION
+        // Ensures OS (Parents) are processed and synced BEFORE Vehicles/Parts (Children)
+
+        // Phase 1: OS Items (Create/Update)
+        const osItems = sortedItems.filter(i => i.entity_type === 'os');
+        console.log(`[SyncService] 🔄 Phase 1: Processing ${osItems.length} OS items...`);
+        for (const item of osItems) {
+            await this.processItem(item);
+        }
+
+        // Phase 2: Children Items (Veiculo, Peca, Despesa)
+        const childItems = sortedItems.filter(i => i.entity_type !== 'os' && i.entity_type !== 'cliente');
+        console.log(`[SyncService] 🔄 Phase 2: Processing ${childItems.length} dependent items...`);
+        for (const item of childItems) {
+            await this.processItem(item);
+        }
+
+        // Phase 3: Clients (Independent, but usually processed first if sorted by priority)
+        // If they were not processed in Phase 1/2 (e.g., if we treat them separate)
+        // Actually, let's keep it simple: OS First, then Everything Else.
+        // If Cliente is Priority 0, it should be processed first.
+        // Let's stick to the user's request: "Fase 1: Só OS", "Fase 2: Só veículos/peças"
+
+        // REFINED STRATEGY:
+        // 1. Clientes (Independent)
+        // 2. OS (Parent)
+        // 3. Others (Children)
+
+        const clientItems = sortedItems.filter(i => i.entity_type === 'cliente');
+        for (const item of clientItems) await this.processItem(item);
+
+        // Note: We already processed OS items above.
+        // We already processed Child items above.
+
+        // Wait, the user code snippet was cleaner. Let's use that but robustly.
+    },
+
+    async processItem(item: any): Promise<void> {
+        // 3.1 Check Backoff & Max Attempts
+        if (item.attempts >= 5) {
+            console.error(`❌ [SyncQueue] MAX ATTEMPTS reached for item ${item.entity_type} ${item.id}. Marking as ERROR.`);
+            await SyncQueueModel.markAttempt(item.id, false, 'Max attempts reached (5)');
+            return;
+        }
+
+        if (item.attempts > 0 && item.last_attempt) {
+            const backoffMs = this.calculateBackoff(item.attempts);
+            const nextRetry = item.last_attempt + backoffMs;
+            if (Date.now() < nextRetry) {
+                console.log(`⏳ Skipping item ${item.entity_type} ${item.id} (Backoff). Retry in ${((nextRetry - Date.now()) / 1000).toFixed(0)}s`);
+                return;
+            }
+        }
+
+        try {
+            const payload = item.payload ? JSON.parse(item.payload) : null;
+
+            // 3.2 Check Dependencies (Parent Existence)
+            const isReady = await this.checkDependencies(item, payload);
+            if (!isReady) {
+                console.log(`⏸️ Skipping item ${item.entity_type} ${item.id} (Dependency not ready)`);
+                return;
             }
 
-            try {
-                const payload = item.payload ? JSON.parse(item.payload) : null;
+            let serverId: number | null = null;
+            console.log(`▶️ [SyncQueue] START item id=${item.id}, resource=${item.entity_type}, op=${item.operation}, localId=${item.entity_local_id}, attempts=${item.attempts}`);
 
-                // 3.2 Check Dependencies (Parent Existence)
-                // New Rule: Wait until parent syncs successfully in this or previous cycle
-                const isReady = await this.checkDependencies(item, payload);
-                if (!isReady) {
-                    console.log(`⏸️ Skipping item ${item.entity_type} ${item.id} (Dependency not ready)`);
-                    continue;
-                }
-
-                let serverId: number | null = null;
-                console.log(`🔄 Processing ${item.entity_type} ${item.operation} (ID: ${item.id}, LocalID: ${item.entity_local_id})...`);
-
-                // 3.3 Execute
-                if (item.entity_type === 'cliente') {
-                    serverId = await this.syncClienteItem(item.operation, item.entity_local_id, payload);
-                } else if (item.entity_type === 'os') {
-                    serverId = await this.syncOSItem(item.operation, item.entity_local_id, payload);
-                } else if (item.entity_type === 'veiculo') {
-                    serverId = await this.syncVeiculoItem(item.operation, item.entity_local_id, payload);
-                } else if (item.entity_type === 'peca') {
-                    serverId = await this.syncPecaItem(item.operation, item.entity_local_id, payload);
-                } else if (item.entity_type === 'despesa') {
-                    serverId = await this.syncDespesaItem(item.operation, item.entity_local_id, payload);
-                }
-
-                // 3.4 Success Mapping
-                if (serverId) {
-                    console.log(`✅ Success ${item.entity_type} -> ServerID: ${serverId}`);
-                    await this.updateLocalEntityId(item.entity_type, item.entity_local_id, serverId);
-                    await SyncQueueModel.markAsProcessed(item.id);
-                } else {
-                    // For operations that don't return ID (DELETE) or already mapped
-                    await SyncQueueModel.markAsProcessed(item.id);
-                }
-
-            } catch (error: any) {
-                console.error(`❌ Erro item ${item.id}:`, error.message);
-                const errorType = this.detectErrorType(error);
-                await SyncQueueModel.markAttempt(item.id, false, `${errorType}: ${error.message}`);
+            // 3.3 Execute
+            if (item.entity_type === 'cliente') {
+                serverId = await this.syncClienteItem(item.operation, item.entity_local_id, payload);
+            } else if (item.entity_type === 'os') {
+                serverId = await this.syncOSItem(item.operation, item.entity_local_id, payload);
+            } else if (item.entity_type === 'veiculo') {
+                serverId = await this.syncVeiculoItem(item.operation, item.entity_local_id, payload);
+            } else if (item.entity_type === 'peca') {
+                serverId = await this.syncPecaItem(item.operation, item.entity_local_id, payload);
+            } else if (item.entity_type === 'despesa') {
+                serverId = await this.syncDespesaItem(item.operation, item.entity_local_id, payload);
             }
+
+            // 3.4 Success Mapping
+            if (serverId) {
+                console.log(`✅ [SyncQueue] DONE item id=${item.id} -> ServerID: ${serverId}`);
+                await this.updateLocalEntityId(item.entity_type, item.entity_local_id, serverId);
+                await SyncQueueModel.markAsProcessed(item.id);
+            } else {
+                // For operations that don't return ID (DELETE) or already mapped
+                await SyncQueueModel.markAsProcessed(item.id);
+            }
+
+        } catch (error: any) {
+            console.error(`❌ [SyncQueue] FAIL item id=${item.id} err=${error.message}`);
+            const errorType = this.detectErrorType(error);
+            await SyncQueueModel.markAttempt(item.id, false, `${errorType}: ${error.message}`);
         }
     },
 
@@ -546,42 +608,61 @@ export const SyncService = {
         // PHASED QUEUE: Strict Dependency Check
         // If parent ID is missing AND parent localId is pending -> Not Ready.
 
-        if (item.entity_type === 'veiculo' && item.operation === 'CREATE') {
-            // Check OS
-            if (!payload.ordemServicoId) {
-                if (payload.osLocalId) {
-                    // Check if OS is synced
-                    const os = await OSModel.getByLocalId(payload.osLocalId);
-                    if (!os || !os.server_id) {
-                        // Must verify if OS is in queue ahead of this item? 
-                        // With sorted execution (OS < VEICULO), if OS failed or hasn't run, we must wait.
-                        console.log(`   -> Missing Parent OS ServerID for Veiculo ${item.entity_local_id} (OS Local: ${payload.osLocalId})`);
-                        return false;
-                    }
-                    // Inject server_id if not present in payload (JIC)
-                    payload.ordemServicoId = os.server_id;
-                } else {
-                    // No ID and no LocalID? Data error.
+        if (item.entity_type === 'veiculo' && (item.operation === 'CREATE' || item.operation === 'UPDATE')) {
+            // Check OS - Strict
+            if (payload.ordemServicoId) {
+                return true; // Parent likely on server
+            } else if (payload.osLocalId) {
+                const os = await OSModel.getByLocalId(payload.osLocalId);
+
+                if (!os) {
+                    console.error(`❌ [SyncQueue] FAIL integrity: Veiculo ${item.entity_local_id} points to non-existent OS localId ${payload.osLocalId}`);
+                    return false; // Should fail/abort? For now, skip.
+                }
+
+                if (!os.server_id) {
+                    // CRITICAL: Parent OS is local but not yet synced.
+                    // With phased execution, we expect the parent OS to have been picked up in Phase 1.
+                    // If it still has no server_id here, it means Phase 1 failed or didn't run for it.
+                    // We must WAIT and retry next cycle.
+                    console.log(`⏸️ [SyncQueue] WAIT item id=${item.id} reason=parent_os_not_synced (OS ${payload.osLocalId})`);
                     return false;
                 }
+
+                // Inject found server_id
+                payload.ordemServicoId = os.server_id;
+            } else {
+                console.error(`❌ [SyncQueue] FAIL integrity: Veiculo ${item.entity_local_id} has NO parent reference (osLocalId/ordemServicoId)`);
+                // Potentially mark as error if we want to stop retrying broken items
+                return false;
             }
         }
 
-        if (item.entity_type === 'peca' && item.operation === 'CREATE') {
-            // Check Veiculo
-            if (!payload.veiculoId) {
-                if (payload.veiculoLocalId) {
-                    const v = await VeiculoModel.getByLocalId(payload.veiculoLocalId);
-                    if (!v || !v.server_id) {
-                        console.log(`   -> Missing Parent Veiculo ServerID for Peca ${item.entity_local_id} (Veiculo Local: ${payload.veiculoLocalId})`);
-                        return false;
-                    }
-                    payload.veiculoId = v.server_id;
-                } else {
+        if (item.entity_type === 'peca' && (item.operation === 'CREATE' || item.operation === 'UPDATE')) {
+            // Check Veiculo - Strict
+            if (payload.veiculoId) {
+                return true;
+            } else if (payload.veiculoLocalId) {
+                const v = await VeiculoModel.getByLocalId(payload.veiculoLocalId);
+
+                if (!v) {
+                    console.error(`❌ [SyncQueue] FAIL integrity: Peca ${item.entity_local_id} points to non-existent Veiculo localId ${payload.veiculoLocalId}`);
                     return false;
                 }
+
+                if (!v.server_id) {
+                    console.log(`⏸️ [SyncQueue] WAIT item id=${item.id} reason=parent_veiculo_not_synced (Veiculo ${payload.veiculoLocalId})`);
+                    return false;
+                }
+
+                // Inject found server_id
+                payload.veiculoId = v.server_id;
+            } else {
+                console.error(`❌ [SyncQueue] FAIL integrity: Peca ${item.entity_local_id} has NO parent reference (veiculoLocalId/veiculoId)`);
+                return false;
             }
         }
+
         return true;
     },
 
@@ -620,17 +701,94 @@ export const SyncService = {
                 if (client?.server_id) payload.clienteId = client.server_id;
                 else throw new Error('Dependência de Cliente não satisfeita');
             }
+
+            // 🛡️ SECURITY: Force current user ID for offline created OS to avoid "User not in company" error
+            const session = await authService.getSessionClaims();
+            if (session?.userId) {
+                payload.usuarioId = session.userId;
+            }
+
             const res = await api.post('/ordens-servico', { ...payload, localId });
             return res.data.id;
         } else if (action === 'UPDATE') {
             const local = await OSModel.getByLocalId(localId);
-            if (!local?.server_id) throw new Error('OS sem server_id');
+
+            // 🛠️ SELF-HEALING: Se tentar UPDATE em OS sem server_id
+            if (!local?.server_id) {
+                if (!local) throw new Error('OS local não encontrada para Update');
+
+                // GUARD 1: Se estiver "SYNCED", é incosistência grave. Não auto-criar.
+                if (local.sync_status === 'SYNCED') {
+                    throw new Error(`Inconsistência: OS SYNCED sem server_id (localId=${localId}). Abortando auto-create.`);
+                }
+
+                console.log(`[SyncService] 🛠️ Self-Healing: Promoting UPDATE to CREATE for OS ${localId}...`);
+
+                // 1. Obter dados completos para recriar payload
+                // Precisamos do full para garantir que temos clienteId, datas, etc.
+                // Mas, OSService.createOS usa um payload específico (CreateOSRequest).
+                // Vamos reconstruir o payload mínimo necessário.
+
+                const fullOS = await OSModel.getByIdFull(local.id, local.empresa_id || 0);
+                if (!fullOS) throw new Error('Falha ao carregar OS completa para self-healing');
+
+                // Resolver Cliente ID para o payload
+                let clienteIdForPayload = fullOS.cliente?.id;
+                if (!clienteIdForPayload && fullOS.cliente?.localId) {
+                    const c = await ClienteModel.getByLocalId(fullOS.cliente.localId);
+                    clienteIdForPayload = c?.server_id || 0;
+                }
+
+                if (!clienteIdForPayload) {
+                    throw new Error('Self-Healing falhou: Cliente da OS não tem server_id');
+                }
+
+                const createPayload = {
+                    clienteId: clienteIdForPayload,
+                    data: fullOS.data,
+                    dataVencimento: fullOS.dataVencimento,
+                    usuarioId: fullOS.usuarioId, // We will override this below if session is available
+                    empresaId: fullOS.empresaId,
+                    localId: localId // IMPORTANTE: Idempotência no backend (se suportado) ou tracking
+                };
+
+                // 🛡️ SECURITY: Force current user ID for self-healing CREATE to avoid "User not in company" error
+                // Just like we did for standard syncOSItem CREATE
+                const session = await authService.getSessionClaims();
+                if (session?.userId) {
+                    createPayload.usuarioId = session.userId;
+                    console.log(`[SyncService] 🛡️ Self-Healing: Overriding usuarioId ${fullOS.usuarioId} -> ${session.userId}`);
+                }
+
+                // 2. Executar POST
+                const res = await api.post('/ordens-servico', createPayload);
+                const createdServerId = res.data.id;
+
+                // GUARD 2: Attach imediato e atômico
+                if (createdServerId) {
+                    await OSModel.attachServerId(localId, createdServerId, res.data.updatedAt);
+                    console.log(`[SyncService] ✅ Self-Healing Success: OS ${localId} -> ServerID ${createdServerId}`);
+                    return createdServerId;
+                } else {
+                    throw new Error('Self-Healing POST retornou sucesso mas sem ID');
+                }
+            }
+
+            // Fluxo normal (tem server_id)
             if (payload.status && Object.keys(payload).length === 1) {
-                await api.patch(`/ordens-servico/${local.server_id}/status`, payload);
+                const res = await api.patch(`/ordens-servico/${local.server_id}/status`, payload);
+                // UPDATE REPLAY PROTECTION: Update local server_updated_at from response
+                if (res.data && res.data.updatedAt) {
+                    await OSModel.attachServerId(localId, local.server_id, res.data.updatedAt);
+                }
             } else {
                 const { id, sync_status, localId: lid, ...clean } = payload;
                 if (clean.usuario_id !== undefined) { clean.usuarioId = clean.usuario_id; delete clean.usuario_id; }
-                await api.patch(`/ordens-servico/${local.server_id}`, clean);
+                const res = await api.patch(`/ordens-servico/${local.server_id}`, clean);
+                // UPDATE REPLAY PROTECTION: Update local server_updated_at from response
+                if (res.data && res.data.updatedAt) {
+                    await OSModel.attachServerId(localId, local.server_id, res.data.updatedAt);
+                }
             }
             return local.server_id;
         }
@@ -639,11 +797,19 @@ export const SyncService = {
 
     async syncVeiculoItem(action: string, localId: string, payload: any): Promise<number | null> {
         if (action === 'CREATE') {
-            if (payload.osLocalId && (!payload.ordemServicoId || payload.ordemServicoId === 0)) {
+            // FORCE Dynamic Lookup of Parent OS ID
+            if (payload.osLocalId) {
                 const os = await OSModel.getByLocalId(payload.osLocalId);
-                if (os?.server_id) payload.ordemServicoId = os.server_id;
-                else throw new Error('Dependência de OS não satisfeita');
+                if (os?.server_id) {
+                    payload.ordemServicoId = os.server_id;
+                    console.log(`[SyncService] 🔄 Dynamic Fix: Veiculo uses OS ServerID ${os.server_id}`);
+                } else {
+                    throw new Error(`Dependência de OS não satisfeita (LocalID: ${payload.osLocalId})`);
+                }
+            } else if (!payload.ordemServicoId) {
+                throw new Error('Veiculo sem referência de OS (nem localId nem serverId)');
             }
+
             const res = await api.post('/ordens-servico/veiculos', { ...payload, localId });
             return res.data.id;
         } else if (action === 'UPDATE') {
@@ -661,11 +827,19 @@ export const SyncService = {
 
     async syncPecaItem(action: string, localId: string, payload: any): Promise<number | null> {
         if (action === 'CREATE') {
-            if (payload.veiculoLocalId && (!payload.veiculoId || payload.veiculoId === 0)) {
+            // FORCE Dynamic Lookup of Parent Veiculo ID
+            if (payload.veiculoLocalId) {
                 const v = await VeiculoModel.getByLocalId(payload.veiculoLocalId);
-                if (v?.server_id) payload.veiculoId = v.server_id;
-                else throw new Error('Dependência de Veículo não satisfeita');
+                if (v?.server_id) {
+                    payload.veiculoId = v.server_id;
+                    console.log(`[SyncService] 🔄 Dynamic Fix: Peca uses Veiculo ServerID ${v.server_id}`);
+                } else {
+                    throw new Error(`Dependência de Veículo não satisfeita (LocalID: ${payload.veiculoLocalId})`);
+                }
+            } else if (!payload.veiculoId) {
+                throw new Error('Peca sem referência de Veículo');
             }
+
             const res = await api.post('/ordens-servico/pecas', { ...payload, localId });
             return res.data.id;
         } else if (action === 'UPDATE') {

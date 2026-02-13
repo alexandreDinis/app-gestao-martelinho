@@ -126,7 +126,7 @@ export const PecaModel = {
             ]
         );
 
-        await this.addToSyncQueue(localId, 'CREATE', data);
+        await this.addToSyncQueue(localId, 'CREATE', { ...data, veiculoLocalId });
 
         return (await this.getById(id))!;
     },

@@ -136,7 +136,7 @@ export const VeiculoModel = {
             [...insertParams, null]
         );
 
-        await this.addToSyncQueue(localId, 'CREATE', data);
+        await this.addToSyncQueue(localId, 'CREATE', { ...data, osLocalId });
 
         return (await this.getById(id))!;
     },
@@ -173,10 +173,10 @@ export const VeiculoModel = {
         if (existing) {
             await databaseService.runUpdate(
                 `UPDATE veiculos_os SET
-          server_id = ?, placa = ?, modelo = ?, cor = ?, valor_total = ?,
+          server_id = ?, os_id = ?, placa = ?, modelo = ?, cor = ?, valor_total = ?,
           sync_status = 'SYNCED', updated_at = ?, deleted_at = ?
          WHERE id = ?`,
-                [veiculo.id, veiculo.placa, veiculo.modelo, veiculo.cor, veiculo.valorTotal, now, veiculo.deletedAt || null, existing.id]
+                [veiculo.id, osLocalId, veiculo.placa, veiculo.modelo, veiculo.cor, veiculo.valorTotal, now, veiculo.deletedAt || null, existing.id]
             );
             localVeiculo = (await this.getById(existing.id))!;
         } else {

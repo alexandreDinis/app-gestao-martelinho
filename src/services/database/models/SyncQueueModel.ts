@@ -98,6 +98,12 @@ export const SyncQueueModel = {
     /**
      * Obter contagem de itens na fila
      */
+    async getPendingCount(): Promise<number> {
+        const result = await databaseService.getFirst<{ count: number }>(
+            `SELECT COUNT(*) as count FROM sync_queue WHERE status = 'PENDING'`
+        );
+        return result?.count || 0;
+    },
     async getCounts(): Promise<{ total: number; errors: number }> {
         const total = await databaseService.getFirst<{ count: number }>(
             `SELECT COUNT(*) as count FROM sync_queue WHERE status = 'PENDING' AND attempts < ?`,

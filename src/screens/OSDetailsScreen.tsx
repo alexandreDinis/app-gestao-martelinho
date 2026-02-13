@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, ActivityIndicator, Alert, Modal, TextInput, RefreshControl } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, ActivityIndicator, Alert, Modal, TextInput, RefreshControl, DeviceEventEmitter } from 'react-native';
 import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../navigation/types';
@@ -133,6 +133,7 @@ export const OSDetailsScreen = () => {
             await osService.updateStatus(osId, newStatus);
             Alert.alert('Sucesso', `Status atualizado para ${newStatus}`);
             fetchDetails();
+            DeviceEventEmitter.emit('osStatusChanged', { osId, newStatus });
         } catch (error) {
             Alert.alert('Erro', 'Falha ao atualizar status.');
         } finally {
