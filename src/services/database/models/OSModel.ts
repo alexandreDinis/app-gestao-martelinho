@@ -223,129 +223,136 @@ export const OSModel = {
     /**
      * Buscar OS completa por ID ou LocalID (JOIN)
      */
+    /**
+     * Buscar OS completa por ID ou LocalID (JOIN)
+     * Refatorado para buscar entidades separadamente e garantir offline support
+     */
     async getByIdFull(id: number | string, empresaId: number): Promise<OrdemServico | null> {
-        const query = `
-            SELECT 
-                os.id as os_id, os.local_id as os_local_id, os.server_id as os_server_id, os.data as os_data, 
-                os.status as os_status, os.valor_total as os_valor_total, os.tipo_desconto as os_tipo_desconto, 
-                os.valor_desconto as os_valor_desconto, os.cliente_id as os_cliente_id, os.cliente_local_id as os_cliente_local_id,
-                os.usuario_id, os.usuario_nome, os.usuario_email, os.sync_status as os_sync_status, os.empresa_id as os_empresa_id,
-                c.id as c_id, c.local_id as c_local_id, c.server_id as c_server_id, c.razao_social as c_razao_social, 
-                c.nome_fantasia as c_nome_fantasia, c.cpf as c_cpf, c.cnpj as c_cnpj, c.tipo_pessoa as c_tipo_pessoa,
-                c.contato as c_contato, c.email as c_email, c.status as c_status,
-                c.logradouro as c_logradouro, c.numero as c_numero, c.complemento as c_complemento,
-                c.bairro as c_bairro, c.cidade as c_cidade, c.estado as c_estado, c.cep as c_cep,
-                v.id as v_id, v.local_id as v_local_id, v.server_id as v_server_id, v.placa as v_placa, 
-                v.modelo as v_modelo, v.cor as v_cor, v.valor_total as v_valor_total,
-                p.id as p_id, p.local_id as p_local_id, p.server_id as p_server_id, p.tipo_peca_id as p_tipo_peca_id, p.nome_peca as p_nome_peca, 
-                p.valor_cobrado as p_valor_cobrado, p.descricao as p_descricao
-            FROM ordens_servico os
-            LEFT JOIN clientes c ON (os.cliente_id = c.id OR os.cliente_local_id = c.local_id)
-            LEFT JOIN veiculos_os v ON (os.id = v.os_id OR os.local_id = v.os_local_id OR (os.server_id IS NOT NULL AND os.server_id = v.os_id))
-            LEFT JOIN pecas_os p ON (v.id = p.veiculo_id OR v.local_id = p.veiculo_local_id)
-            WHERE (os.id = ? OR os.local_id = ? OR os.server_id = ?) AND os.empresa_id = ? AND os.deleted_at IS NULL
-        `;
+        // 1. Buscar a OS (Local ou Server)
+        let osLocal: LocalOS | null = null;
 
-        const rows = await databaseService.runQuery<any>(query, [id, id, id, empresaId]);
-
-        if (rows.length === 0) return null;
-
-        let os: OrdemServico | null = null;
-
-        for (const row of rows) {
-            if (!os) {
-                if (!row.os_empresa_id) {
-                    console.error('[OSModel.getByIdFull] Critical: OS sem empresa_id', { osId: row.os_id, osLocalId: row.os_local_id });
-                    // Return null to avoid crashing UI but prevent usage of corrupt data, or throw.
-                    // Throwing is safer for debugging "why is my screen white/error".
-                    throw new Error(`OS data corruption: Missing empresa_id for OS ${row.os_id || row.os_local_id}`);
-                }
-
-                os = {
-                    id: row.os_server_id || row.os_id,
-                    localId: row.os_local_id,
-                    data: row.os_data,
-                    status: row.os_status as OSStatus,
-                    cliente: {
-                        id: row.c_server_id || row.c_id || 0,
-                        razaoSocial: row.c_razao_social || 'Cliente não encontrado',
-                        nomeFantasia: row.c_nome_fantasia || '',
-                        cpf: row.c_cpf || undefined,
-                        cnpj: row.c_cnpj || undefined,
-                        tipoPessoa: row.c_tipo_pessoa as any,
-                        contato: row.c_contato || '',
-                        email: row.c_email || '',
-                        status: row.c_status as any,
-                        logradouro: row.c_logradouro || undefined,
-                        numero: row.c_numero || undefined,
-                        complemento: row.c_complemento || undefined,
-                        bairro: row.c_bairro || undefined,
-                        cidade: row.c_cidade || undefined,
-                        estado: row.c_estado || undefined,
-                        cep: row.c_cep || undefined,
-                    } as Cliente,
-                    valorTotal: row.os_valor_total || 0,
-                    veiculos: [],
-                    tipoDesconto: row.os_tipo_desconto as any,
-                    valorDesconto: row.os_valor_desconto || undefined,
-                    valorTotalSemDesconto: row.os_valor_total || 0,
-                    valorTotalComDesconto: row.os_valor_total || 0,
-                    usuarioId: row.usuario_id || undefined,
-                    usuarioNome: row.usuario_nome || undefined,
-                    usuarioEmail: row.usuario_email || undefined,
-                    syncStatus: row.os_sync_status as any,
-                    empresaId: Number(row.os_empresa_id),
-                    atrasado: false
-                } as any;
-            }
-
-            if (os && row.v_id) {
-                const vSearchId = row.v_server_id || row.v_id;
-                let veiculo = os.veiculos.find((v: any) => v.id === vSearchId);
-
-                if (!veiculo) {
-                    veiculo = {
-                        id: vSearchId,
-                        placa: row.v_placa,
-                        modelo: row.v_modelo || '',
-                        cor: row.v_cor || '',
-                        valorTotal: row.v_valor_total || 0,
-                        pecas: []
-                    };
-                    os.veiculos.push(veiculo);
-                }
-
-                if (row.p_id) {
-                    veiculo.pecas.push({
-                        id: row.p_server_id || row.p_id,
-                        tipoPecaId: row.p_tipo_peca_id || undefined,
-                        nomePeca: row.p_nome_peca || '',
-                        valorCobrado: row.p_valor_cobrado || 0,
-                        descricao: row.p_descricao || undefined
-                    });
-                }
-            }
+        // Tentar buscar por server_id (se for número)
+        if (typeof id === 'number') {
+            osLocal = await this.getByServerId(id);
         }
 
-        if (os) {
-            const totalPecas = os.veiculos.reduce((accV, v) => {
-                const totalV = v.pecas.reduce((accP, p) => accP + (p.valorCobrado || 0), 0);
-                v.valorTotal = totalV;
-                return accV + totalV;
-            }, 0);
-
-            os.valorTotalSemDesconto = totalPecas;
-
-            const tipoDesconto = os.tipoDesconto as string | null | undefined;
-            if ((tipoDesconto === 'REAL' || tipoDesconto === 'VALOR_FIXO') && os.valorDesconto) {
-                os.valorTotal = Math.max(0, totalPecas - os.valorDesconto);
-            } else if ((tipoDesconto === 'PORCENTAGEM' || tipoDesconto === 'PERCENTUAL') && os.valorDesconto) {
-                os.valorTotal = Math.max(0, totalPecas - (totalPecas * (os.valorDesconto / 100)));
+        // Se não achou ou não é número, busca por local_id ou id
+        if (!osLocal) {
+            // Se for string, assume local_id UUID
+            if (typeof id === 'string') {
+                osLocal = await this.getByLocalId(id);
             } else {
-                os.valorTotal = totalPecas;
-                os.valorTotalComDesconto = totalPecas;
+                // Se for number, tenta buscar pelo ID local
+                osLocal = await this.getById(id);
             }
         }
+
+        // Se ainda não achou, pode ser que o "id" passado seja o ID local numérico (se id for number) e getByServerId falhou
+        if (!osLocal && typeof id === 'number') {
+            osLocal = await this.getById(id);
+        }
+
+        if (!osLocal) return null;
+
+        // Validar empresa (Data Isolation)
+        if (osLocal.empresa_id && osLocal.empresa_id !== empresaId) {
+            console.warn(`[OSModel] ⚠️ Access denied: OS ${osLocal.id} belongs to empresa ${osLocal.empresa_id}, requested by ${empresaId}`);
+            return null;
+        }
+
+        // 2. Buscar Cliente (Vínculo de Ferro via UUID)
+        const { ClienteModel } = require('./ClienteModel');
+        let cliente: any = { id: 0, razaoSocial: 'Cliente não encontrado', nomeFantasia: '?' };
+
+        if (osLocal.cliente_local_id) {
+            // Prioridade absoluta: UUID
+            const c = await ClienteModel.getByLocalId(osLocal.cliente_local_id);
+            if (c) cliente = await ClienteModel.toApiFormat(c);
+        } else if (osLocal.cliente_id) {
+            // Legado: fallback para PK se UUID estiver ausente (não deve ocorrer após refactor)
+            const c = await ClienteModel.getById(osLocal.cliente_id);
+            if (c) cliente = await ClienteModel.toApiFormat(c);
+        }
+
+        // 3. Buscar Veículos 
+        // Usamos query manual aqui para garantir OR entre local_id e osc_id, 
+        // pois VeiculoModel.getByOSId só busca por os_id e getByLocalId só um veículo specific.
+        const veiculosRows = await databaseService.runQuery<any>(
+            `SELECT * FROM veiculos_os 
+             WHERE (os_id = ? OR os_local_id = ?) 
+             AND deleted_at IS NULL`,
+            [osLocal.id, osLocal.local_id]
+        );
+
+        const { PecaModel } = require('./PecaModel');
+
+        const veiculos = await Promise.all(veiculosRows.map(async (v) => {
+            // FIX: Buscar peças tanto pelo ID numérico quanto pelo UUID (offline)
+            // PecaModel.getByVeiculoId só busca por veiculo_id, o que falha para veículos não syncados.
+            const pecas = await databaseService.runQuery<any>(
+                `SELECT * FROM pecas_os 
+                 WHERE (veiculo_id = ? OR veiculo_local_id = ?) 
+                 AND deleted_at IS NULL`,
+                [v.id, v.local_id]
+            );
+
+            const pecasApi = pecas.map((p: any) => ({
+                id: p.server_id || p.id,
+                localId: p.local_id,
+                tipoPecaId: p.tipo_peca_id,
+                nomePeca: p.nome_peca,
+                valorCobrado: p.valor_cobrado,
+                descricao: p.descricao
+            }));
+
+            return {
+                id: v.server_id || v.id,
+                localId: v.local_id,
+                placa: v.placa,
+                modelo: v.modelo,
+                cor: v.cor,
+                valorTotal: v.valor_total,
+                pecas: pecasApi
+            };
+        }));
+
+        // Calcular totais
+        const totalPecas = veiculos.reduce((acc, v) => acc + (v.valorTotal || 0), 0);
+
+        let valorTotalFinal = totalPecas;
+        const tipoDesconto = osLocal.tipo_desconto;
+
+        if ((tipoDesconto === 'REAL' || tipoDesconto === 'VALOR_FIXO') && osLocal.valor_desconto) {
+            valorTotalFinal = Math.max(0, totalPecas - osLocal.valor_desconto);
+        } else if ((tipoDesconto === 'PORCENTAGEM' || tipoDesconto === 'PERCENTUAL') && osLocal.valor_desconto) {
+            valorTotalFinal = Math.max(0, totalPecas - (totalPecas * (osLocal.valor_desconto / 100)));
+        } else {
+            valorTotalFinal = totalPecas;
+        }
+
+        // Override usuarioId se sync status for CREATE e tiver sessão? (Simplificado aqui)
+        // Mantemos simples para focar na correção do veículo.
+
+        const os: OrdemServico = {
+            id: osLocal.server_id || osLocal.id,
+            localId: osLocal.local_id,
+            data: osLocal.data,
+            dataVencimento: osLocal.data_vencimento || undefined,
+            status: osLocal.status as OSStatus,
+            cliente: cliente,
+            veiculos: veiculos,
+            valorTotal: valorTotalFinal,
+            tipoDesconto: osLocal.tipo_desconto as any,
+            valorDesconto: osLocal.valor_desconto || undefined,
+            valorTotalSemDesconto: totalPecas,
+            valorTotalComDesconto: valorTotalFinal,
+            usuarioId: osLocal.usuario_id || undefined,
+            usuarioNome: osLocal.usuario_nome || undefined,
+            usuarioEmail: osLocal.usuario_email || undefined,
+            syncStatus: osLocal.sync_status,
+            empresaId: osLocal.empresa_id,
+            atrasado: false // TODO: calcular se necessário
+        } as unknown as OrdemServico;
 
         return os;
     },
@@ -486,34 +493,33 @@ export const OSModel = {
     /**
      * Buscar OS por cliente
      */
-    async getByClienteId(clienteId: number): Promise<LocalOS[]> {
-        return await databaseService.runQuery<LocalOS>(
-            `SELECT * FROM ordens_servico 
-       WHERE cliente_id = ? AND deleted_at IS NULL AND sync_status != 'PENDING_DELETE'
-       ORDER BY data DESC`,
-            [clienteId]
-        );
+    async getByClienteId(clienteId: number | string): Promise<LocalOS[]> {
+        const isUuid = typeof clienteId === 'string';
+        const query = isUuid
+            ? `SELECT * FROM ordens_servico WHERE cliente_local_id = ? AND deleted_at IS NULL AND sync_status != 'PENDING_DELETE' ORDER BY data DESC`
+            : `SELECT * FROM ordens_servico WHERE cliente_id = ? AND deleted_at IS NULL AND sync_status != 'PENDING_DELETE' ORDER BY data DESC`;
+
+        return await databaseService.runQuery<LocalOS>(query, [clienteId]);
     },
 
     /**
      * Criar OS local (para uso offline)
      */
-    async create(data: CreateOSRequest & { clienteLocalId?: string; usuarioId?: number; empresaId?: number }, syncStatus: SyncStatus = 'PENDING_CREATE'): Promise<LocalOS> {
+    async create(data: CreateOSRequest & { clienteLocalId: string; usuarioId?: number; empresaId: number }, syncStatus: SyncStatus = 'PENDING_CREATE'): Promise<LocalOS> {
         const now = Date.now();
         const localId = uuidv4();
 
-        // Resolver cliente (pode ser por server_id ou local_id)
-        let clienteId: number | null = null;
-        let clienteLocalId: string | null = data.clienteLocalId || null;
+        // 1. Prioridade absoluta: Vínculo via UUID (Linkage de Ferro)
+        const { ClienteModel } = require('./ClienteModel');
+        const clienteLocalId = data.clienteLocalId;
+        const cliente = await ClienteModel.getByLocalId(clienteLocalId);
 
-        if (data.clienteId) {
-            const { ClienteModel } = require('./ClienteModel');
-            const cliente = await ClienteModel.getByServerId(data.clienteId);
-            if (cliente) {
-                clienteId = cliente.id;
-                clienteLocalId = cliente.local_id;
-            }
+        if (!cliente) {
+            throw new Error(`[OSModel] Cliente local não encontrado para vínculo UUID: ${clienteLocalId}`);
         }
+
+        const clienteId = cliente.id; // PK Local
+        console.log(`[OSModel] 🔗 CreateOS (Strict): Linked via local_id ${clienteLocalId} -> PK ${clienteId}`);
 
         // 👤 Resolver Responsável (Técnico) vindo do dropdown
         let usuarioId = data.usuarioId || null;
@@ -554,8 +560,8 @@ export const OSModel = {
                 uuid,
                 null, // server_id
                 1, // version
-                clienteId,
-                clienteLocalId,
+                clienteId, // local_pk
+                clienteLocalId, // local_uuid (THE LINK)
                 data.data,
                 data.dataVencimento || null,
                 'ABERTA',
@@ -913,19 +919,24 @@ export const OSModel = {
     /**
      * Recalcular valor total da OS baseado nos veículos
      */
-    async recalculateTotal(osId: number): Promise<number> {
+    async recalculateTotal(osId: number | string): Promise<number> {
+        const isLocalId = typeof osId === 'string';
+        const osIdParam = isLocalId ? null : osId;
+        const osLocalIdParam = isLocalId ? osId : null;
+
         const result = await databaseService.getFirst<{ total: number }>(
             `SELECT SUM(valor_total) as total FROM veiculos_os 
-             WHERE (os_id = ? OR os_local_id = (SELECT local_id FROM ordens_servico WHERE id = ?))
+             WHERE (os_id = ? OR os_local_id = ? OR os_local_id = (SELECT local_id FROM ordens_servico WHERE id = ?))
              AND sync_status != 'PENDING_DELETE'`,
-            [osId, osId]
+            [osIdParam, osLocalIdParam, osIdParam]
         );
         const total = result?.total || 0;
 
-        await databaseService.runUpdate(
-            `UPDATE ordens_servico SET valor_total = ?, updated_at = ? WHERE id = ?`,
-            [total, Date.now(), osId]
-        );
+        const updateQuery = isLocalId
+            ? `UPDATE ordens_servico SET valor_total = ?, updated_at = ? WHERE local_id = ?`
+            : `UPDATE ordens_servico SET valor_total = ?, updated_at = ? WHERE id = ?`;
+
+        await databaseService.runUpdate(updateQuery, [total, Date.now(), osId]);
 
         console.log(`[OSModel] Recalculated total for OS ${osId}: ${total}`);
         return total;
@@ -993,20 +1004,17 @@ export const OSModel = {
         // 1. Atualizar OS com server_id
         await databaseService.runUpdate(
             `UPDATE ordens_servico SET 
-        server_id = ?, 
-        sync_status = 'SYNCED', 
-        last_synced_at = ? 
-       WHERE local_id = ?`,
+                server_id = ?, 
+                sync_status = 'SYNCED', 
+                last_synced_at = ? 
+            WHERE local_id = ?`,
             [serverId, Date.now(), localId]
         );
 
-        // 2. CASCATA: Atualizar veículos filhos para apontar pro novo server_id da OS
-        const childrenUpdated = await databaseService.runUpdate(
-            `UPDATE veiculos_os SET os_id = ? WHERE os_local_id = ?`,
-            [serverId, localId]
-        );
-
-        console.log(`[OSModel] ✅ OS synced. Updated ${childrenUpdated} child veiculos to point to OS ID ${serverId}`);
+        // 2. CASCATA: REMOVIDO
+        // Não atualizar veículos filhos com server_id, pois os_id refere-se à PK Local
+        // O vínculo é mantido pelo os_id (PK Local) que não muda.
+        console.log(`[OSModel] ✅ OS synced (ID ${serverId}). Local links preserved.`);
 
         // 3. Remover da fila de sync
         await databaseService.runDelete(
@@ -1035,7 +1043,7 @@ export const OSModel = {
         } else {
             await databaseService.runInsert(
                 `INSERT INTO sync_queue (resource, temp_id, action, payload, status, created_at, attempts)
-         VALUES ('os', ?, ?, ?, 'PENDING', ?, 0)`,
+                 VALUES ('os', ?, ?, ?, 'PENDING', ?, 0)`,
                 [localId, operation, payload ? JSON.stringify(payload) : null, now]
             );
         }
@@ -1079,3 +1087,4 @@ export const OSModel = {
         await databaseService.runDelete(`DELETE FROM sync_queue WHERE resource = 'os' AND temp_id = ?`, [localId]);
     }
 };
+

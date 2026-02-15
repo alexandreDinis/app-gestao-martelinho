@@ -221,7 +221,7 @@ export const ClientesScreen = () => {
             <FlatList
                 data={filteredClientes}
                 renderItem={renderCliente}
-                keyExtractor={(item) => item.id.toString()}
+                keyExtractor={(item) => item.localId || item.id.toString()}
                 contentContainerStyle={{ padding: 16 }}
                 refreshControl={
                     <RefreshControl

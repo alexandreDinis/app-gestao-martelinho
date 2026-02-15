@@ -80,65 +80,95 @@ export const VeiculoModel = {
      * Criar veículo local
      */
     async create(data: AddVeiculoRequest & { osLocalId?: string }): Promise<LocalVeiculo> {
-        const now = Date.now();
-        const localId = uuidv4();
+        try {
+            console.log('[VeiculoModel] create() called', JSON.stringify(data));
+            const now = Date.now();
+            const localId = uuidv4();
+            console.log('[VeiculoModel] generated localId', localId);
 
-        // Resolver OS
-        let osId: number | null = null;
-        let osLocalId: string | null = data.osLocalId || null;
+            // Resolver OS
+            let osId: number | null = null;
+            let osLocalId: string | null = data.osLocalId || null;
 
-        const { OSModel } = require('./OSModel');
-        if (data.ordemServicoId) {
-            const os = await OSModel.getByServerId(data.ordemServicoId);
-            if (os) {
-                osId = os.id;
-                osLocalId = os.local_id;
+            console.log('[VeiculoModel] requiring OSModel...');
+            const { OSModel } = require('./OSModel');
+            console.log('[VeiculoModel] OSModel loaded:', !!OSModel);
+
+            // 1. Prioridade absoluta: Buscar por local_id (UUID)
+            if (osLocalId) {
+                console.log('[VeiculoModel] searching by osLocalId', osLocalId);
+                const os = await OSModel.getByLocalId(osLocalId);
+                if (os) {
+                    osId = os.id;
+                    osLocalId = os.local_id;
+                    console.log(`[VeiculoModel] 🔗 Vinculado via osLocalId ${osLocalId} -> PK ${osId}`);
+                } else {
+                    console.log('[VeiculoModel] osLocalId not found');
+                }
             }
-        }
 
-        // Se não achou por server_id (ou não foi passado), tentar pelo local_id
-        if (!osId && osLocalId) {
-            const os = await OSModel.getByLocalId(osLocalId);
-            if (os) {
-                osId = os.id;
+            // 2. Fallback: Se não achou por local_id, busca por server_id
+            if (!osId && data.ordemServicoId) {
+                console.log('[VeiculoModel] fallback searching by ordemServicoId', data.ordemServicoId);
+                // Tenta primeiro como server_id
+                const osByServer = await OSModel.getByServerId(data.ordemServicoId);
+                if (osByServer) {
+                    osId = osByServer.id;
+                    osLocalId = osByServer.local_id;
+                    console.log(`[VeiculoModel] 🔗 Vinculado via server_id ${data.ordemServicoId} -> PK ${osId}`);
+                } else {
+                    // Se não é server_id, pode ser PK local
+                    const osByPk = await OSModel.getById(data.ordemServicoId);
+                    if (osByPk) {
+                        osId = osByPk.id;
+                        osLocalId = osByPk.local_id;
+                        console.log(`[VeiculoModel] 🔗 Vinculado via PK local ${data.ordemServicoId} -> LocalId ${osLocalId}`);
+                    }
+                }
             }
+
+
+            const placaValue = data.placa ? data.placa.toUpperCase() : '';
+
+            if (!placaValue) {
+                console.error('[VeiculoModel] ❌ Critical: Placa is missing/empty in create payload', JSON.stringify(data));
+                throw new Error('Placa is required for vehicle creation');
+            }
+
+            const insertParams = [
+                localId,
+                null, // server_id
+                1, // version
+                osId,
+                osLocalId,
+                placaValue,
+                data.modelo || null,
+                data.cor || null,
+                0, // valor_total
+                now, // updated_at
+                now // created_at
+                // deleted_at implicitly null
+            ];
+
+            console.log('[VeiculoModel] 🛠️ Inserting vehicle with params:', JSON.stringify(insertParams));
+
+            const id = await databaseService.runInsert(
+                `INSERT INTO veiculos_os (
+            local_id, server_id, version, os_id, os_local_id,
+            placa, modelo, cor, valor_total, sync_status, updated_at, created_at, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_CREATE', ?, ?, ?)`,
+                [...insertParams, null]
+            );
+
+            await this.addToSyncQueue(localId, 'CREATE', { ...data, osLocalId });
+
+            console.log('[VeiculoModel] ✅ create() SUCCESS. ID:', id);
+            return (await this.getById(id))!;
+        } catch (error: any) {
+            console.error('[VeiculoModel] ❌ create() FAILED:', error.message);
+            console.error('[VeiculoModel] Stack:', error.stack);
+            throw error;
         }
-
-
-        const placaValue = data.placa ? data.placa.toUpperCase() : '';
-
-        if (!placaValue) {
-            console.error('[VeiculoModel] ❌ Critical: Placa is missing/empty in create payload', JSON.stringify(data));
-            throw new Error('Placa is required for vehicle creation');
-        }
-
-        const insertParams = [
-            localId,
-            null,
-            1,
-            osId,
-            osLocalId,
-            placaValue,
-            data.modelo || null,
-            data.cor || null,
-            0,
-            now,
-            now
-        ];
-
-        console.log('[VeiculoModel] 🛠️ Inserting vehicle with params:', JSON.stringify(insertParams));
-
-        const id = await databaseService.runInsert(
-            `INSERT INTO veiculos_os (
-        local_id, server_id, version, os_id, os_local_id,
-        placa, modelo, cor, valor_total, sync_status, updated_at, created_at, deleted_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_CREATE', ?, ?, ?)`,
-            [...insertParams, null]
-        );
-
-        await this.addToSyncQueue(localId, 'CREATE', { ...data, osLocalId });
-
-        return (await this.getById(id))!;
     },
 
     /**
@@ -293,13 +323,10 @@ export const VeiculoModel = {
             [serverId, localId]
         );
 
-        // 2. CASCATA: Atualizar peças filhas para apontar pro novo server_id do veículo
-        const childrenUpdated = await databaseService.runUpdate(
-            `UPDATE pecas_os SET veiculo_id = ? WHERE veiculo_local_id = ?`,
-            [serverId, localId]
-        );
-
-        console.log(`[VeiculoModel] ✅ Veiculo synced. Updated ${childrenUpdated} child pecas to point to Veiculo ID ${serverId}`);
+        // 2. CASCATA: REMOVIDO
+        // Não atualizar peças filhas com server_id, pois veiculo_id refere-se à PK Local
+        // O vínculo é mantido pelo veiculo_id (PK Local) que não muda.
+        console.log(`[VeiculoModel] ✅ Veiculo synced (ID ${serverId}). Local links preserved.`);
 
         // 3. Remover da fila de sync
         await databaseService.runDelete(

@@ -74,6 +74,7 @@ export interface Cliente {
     estado?: string;
     cep?: string;
     empresaId?: number;
+    correlationId?: string | null;
     // Sync & Soft Delete
     deletedAt?: string | null;
     updatedAt?: string | null;
@@ -150,7 +151,8 @@ export interface OrdemServico {
 }
 
 export interface CreateOSRequest {
-    clienteId: number;
+    clienteId?: number; // Optional, clienteLocalId is preferred
+    clienteLocalId: string; // Mandatory for strict linkage
     data: string;
     dataVencimento?: string;
     usuarioId?: number;
@@ -162,6 +164,7 @@ export interface UpdateOSStatusRequest {
 
 export interface AddVeiculoRequest {
     ordemServicoId: number;
+    osLocalId?: string; // UUID of parent OS
     placa: string;
     modelo: string;
     cor: string;
@@ -169,6 +172,7 @@ export interface AddVeiculoRequest {
 
 export interface AddPecaRequest {
     veiculoId: number;
+    veiculoLocalId?: string; // UUID of parent Vehicle
     tipoPecaId: number;
     valorCobrado?: number;
     descricao?: string;

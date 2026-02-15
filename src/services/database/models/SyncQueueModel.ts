@@ -50,6 +50,16 @@ export const SyncQueueModel = {
     },
 
     /**
+     * Atualizar apenas o payload de um item (ex: Self-Healing)
+     */
+    async updatePayload(id: number, payload: any): Promise<void> {
+        await databaseService.runUpdate(
+            `UPDATE sync_queue SET payload = ? WHERE id = ?`,
+            [JSON.stringify(payload), id]
+        );
+    },
+
+    /**
      * Obter o próximo item pendente para processamento
      * Prioridade implícita: FIFO (created_at ASC) + tentativas (attempts ASC)
      */
@@ -156,6 +166,19 @@ export const SyncQueueModel = {
     },
 
     /**
+     * Obter itens pendentes por tipo
+     */
+    async getPendingByType(entityType: string): Promise<SyncQueueItem[]> {
+        return await databaseService.runQuery<SyncQueueItem>(
+            `SELECT id, resource as entity_type, temp_id as entity_local_id, action as operation, payload, status, created_at, attempts 
+             FROM sync_queue 
+             WHERE resource = ? AND status = 'PENDING' AND attempts < ?
+             ORDER BY created_at ASC`,
+            [entityType, MAX_RETRY_ATTEMPTS]
+        );
+    },
+
+    /**
      * Reseta tentativas de itens falhos para tentar novamente
      */
     async retryAllFailed(): Promise<void> {
@@ -164,6 +187,20 @@ export const SyncQueueModel = {
             `UPDATE sync_queue SET attempts = 0, status = 'PENDING' WHERE attempts >= ?`,
             [MAX_RETRY_ATTEMPTS]
         );
+    },
+
+    /**
+     * Limpa itens "presos" (zombies) na fila de sync
+     * Ex: Itens marcados como PENDING mas com next_retry_at no passado e muitas tentativas
+     */
+    async autoResetStuckItems(): Promise<number> {
+        const result = await databaseService.runUpdate(
+            `UPDATE sync_queue 
+             SET attempts = 0, next_retry_at = NULL 
+             WHERE status = 'PENDING' AND attempts > 3 AND next_retry_at < ?`,
+            [Date.now()]
+        );
+        return result || 0;
     },
 
     /**

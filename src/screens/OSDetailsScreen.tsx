@@ -172,6 +172,7 @@ export const OSDetailsScreen = () => {
                                     setUpdating(true);
                                     await osService.addVeiculo({
                                         ordemServicoId: osId,
+                                        osLocalId: os?.localId,
                                         placa: placaLimpa,
                                         modelo: check.veiculoExistente!.modelo || '',
                                         cor: check.veiculoExistente!.cor || '',
@@ -215,6 +216,7 @@ export const OSDetailsScreen = () => {
                     setUpdating(true);
                     await osService.addVeiculo({
                         ordemServicoId: osId,
+                        osLocalId: os?.localId,
                         placa: placaLimpa,
                         modelo: check.veiculoExistente.modelo,
                         cor: check.veiculoExistente.cor,
@@ -242,6 +244,7 @@ export const OSDetailsScreen = () => {
             setUpdating(true);
             await osService.addVeiculo({
                 ordemServicoId: osId,
+                osLocalId: os?.localId,
                 placa: placaLimpa,
                 modelo: veiculoForm.modelo,
                 cor: veiculoForm.cor,
@@ -267,8 +270,10 @@ export const OSDetailsScreen = () => {
         const doAdd = async () => {
             try {
                 setUpdating(true);
+                const veiculo = os?.veiculos?.find(v => v.id === pecaModal.veiculoId);
                 await osService.addPeca({
                     veiculoId: pecaModal.veiculoId!,
+                    veiculoLocalId: veiculo?.localId,
                     tipoPecaId: parseInt(pecaForm.tipoPecaId),
                     valorCobrado: pecaForm.valorCobrado ? parseFloat(pecaForm.valorCobrado) : undefined,
                     descricao: pecaForm.descricao || undefined,

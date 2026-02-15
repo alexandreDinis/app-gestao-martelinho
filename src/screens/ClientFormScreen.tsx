@@ -152,7 +152,7 @@ export const ClientFormScreen = () => {
     };
 
     const handleSave = async () => {
-        if (!validate()) return;
+        if (saving || !validate()) return;
 
         try {
             setSaving(true);

@@ -24,9 +24,11 @@ export const osService = {
         const fetchLocal = async () => {
             Logger.info('[OSService] Fetching clients from Local DB');
             const { ClienteModel } = require('./database/models/ClienteModel');
+
+            // 1. Fetch from DB with DISTINCT (via model search)
             const localClients = await ClienteModel.search(filtros?.termo || '');
 
-            return localClients.map((c: any) => ({
+            const mapped: Cliente[] = localClients.map((c: any) => ({
                 id: c.server_id || c.id,
                 localId: c.local_id,
                 razaoSocial: c.razao_social,
@@ -46,6 +48,24 @@ export const osService = {
                 cep: c.cep,
                 local_id: c.local_id
             }));
+
+            // 2. DIAGNOSTICS: Check for duplicates by server_id
+            const dupeCheck = mapped.reduce((acc: any, c: any) => {
+                if (c.id) acc[c.id] = (acc[c.id] || 0) + 1;
+                return acc;
+            }, {});
+            const hasDupes = Object.entries(dupeCheck).filter(([_, count]: any) => count > 1);
+            if (hasDupes.length > 0) {
+                Logger.info('⚠️ [OSService] DUPLICATAS ENCONTRADAS (server_id):', hasDupes);
+            }
+
+            // 3. Force unique by localId AND server_id (Safety fallback for React Keys)
+            const uniqueByLocalId = Array.from(new Map(mapped.map((item: Cliente) => [item.localId, item])).values());
+
+            // Second pass: deduplicate by server_id (id) if present
+            const finalUnique = Array.from(new Map(uniqueByLocalId.map((item: Cliente) => [item.id || item.localId, item])).values());
+
+            return finalUnique;
         };
 
         if (isOnline) {
@@ -82,7 +102,10 @@ export const osService = {
      * - Se offline: salva localmente (incluindo hierarquia) e adiciona à fila
      */
     createOS: async (data: CreateOSRequest): Promise<OrdemServico> => {
-        Logger.info('[OSService] Creating OS (Offline-First Pattern)', { clienteId: data.clienteId, data: data.data });
+        Logger.info('[OSService] Creating OS (Strict UUID Linkage Pattern)', {
+            clienteLocalId: data.clienteLocalId,
+            data: data.data
+        });
 
         // 🛡️ Secure Context
         const { authService } = require('./authService');
@@ -93,38 +116,58 @@ export const osService = {
         }
 
         const empresaId = session.empresaId;
+
+        // 1. Resolve o cliente para garantir vínculo via Local ID (UUID)
+        const { ClienteModel } = require('./database/models/ClienteModel');
+        const cliente = await ClienteModel.getByLocalId(data.clienteLocalId);
+        if (!cliente) {
+            throw new Error(`Cliente local não encontrado: ${data.clienteLocalId}`);
+        }
+
         const { isConnected, isInternetReachable } = await OfflineDebug.checkConnectivity();
         const isOnline = isConnected && isInternetReachable && !OfflineDebug.isForceOffline();
 
-        // 1. ALWAYS Create Locally First (Optimistic) -> Queues for Sync Automatically
-        const localOS = await OSModel.create({ ...data, empresaId }, 'PENDING_CREATE');
-        Logger.info('[OSService] OS created locally (Optimistic)', { localId: localOS.local_id, queued: true });
+        // 2. Criar Localmente (Priorizando cliente_local_id)
+        const localOS = await OSModel.create({
+            ...data,
+            clienteId: cliente.server_id || undefined, // Atachamos o server_id se já existir
+            clienteLocalId: cliente.local_id,
+            empresaId
+        }, 'PENDING_CREATE');
 
-        // 2. If Online, Try to Sync Immediately
+        Logger.info('[OSService] OS created locally (Strict Link)', {
+            localId: localOS.local_id,
+            clienteLocalId: localOS.cliente_local_id
+        });
+
+        // 3. Se Online, Tentar Sincronizar Imediatamente
         if (isOnline) {
             try {
                 Logger.info('[OSService] Attempting immediate API sync...');
-                // Note: We send the original data. The backend creates a new ID.
-                const response = await api.post<OrdemServico>('/ordens-servico', data);
+                // Preparamos o payload para o backend. 
+                // Se o cliente já tem server_id, enviamos. Senão, o backend criará a OS pendente.
+                const apiPayload = {
+                    ...data,
+                    clienteId: cliente.server_id // Pode ser null se cliente for offline-only
+                };
 
-                // 3. Success: Attach Server ID and Clear Queue
+                const response = await api.post<OrdemServico>('/ordens-servico', apiPayload);
+
+                // 4. Sucesso: Anexar Server ID e Marcar como Syncado
                 Logger.info('[OSService] Immediate Sync Success. Attaching Server ID:', response.data.id);
                 await OSModel.attachServerId(localOS.local_id, response.data.id, response.data.updatedAt);
 
-                // Return server data (most up to date)
                 return response.data;
             } catch (error) {
-                Logger.warn('[OSService] Immediate sync failed, staying in offline mode (item is already queued)', error);
-                // No action needed: It is already in the queue from Step 1.
+                Logger.warn('[OSService] Immediate sync failed, staying in offline mode', error);
             }
         }
 
-        // 4. Trigger Background Sync (if we didn't just try and fail, or just to be sure)
+        // 5. Trigger Background Sync
         if (!OfflineDebug.isForceOffline()) {
-            import('./SyncService').then(m => m.SyncService.processQueue('OS.create_optimistic').catch(e => console.error(e)));
+            import('./SyncService').then(m => m.SyncService.processQueue('OS.create_strict').catch(e => console.error(e)));
         }
 
-        // 5. Return Local Data (converted to API format)
         return await OSModel.toApiFormat(localOS);
     },
 
@@ -388,30 +431,56 @@ export const osService = {
             }
         }
 
-        // 1. Resolver OS Local
-        let os = await OSModel.getByServerId(data.ordemServicoId);
+        // 1. Resolver OS Local (Grampo de UUID é prioritário para evitar bagunça)
+        let os = null;
+        if (data.osLocalId) {
+            os = await OSModel.getByLocalId(data.osLocalId);
+        }
+
+        // Se não achou por UUID, tenta pelos IDs numéricos (podem ser ambíguos)
+        if (!os) {
+            os = await OSModel.getByServerId(data.ordemServicoId);
+        }
         if (!os) {
             os = await OSModel.getById(data.ordemServicoId);
         }
 
         if (!os) {
-            throw new Error(`OS não encontrada para vincular veículo: ${data.ordemServicoId}`);
+            throw new Error(`OS não encontrada para vincular veículo (ID: ${data.ordemServicoId} / UUID: ${data.osLocalId})`);
         }
 
         // 2. Salvar localmente
         const VeiculoModel = await import('./database/models/VeiculoModel').then(m => m.VeiculoModel);
-        const localVeiculo = await VeiculoModel.create({
-            ...data,
-            osLocalId: os.local_id
-        });
 
-        // 3. Trigger Sync
+        let localVeiculo;
+        try {
+            console.log('[OSService] Calling VeiculoModel.create...');
+            localVeiculo = await VeiculoModel.create({
+                ...data,
+                osLocalId: os.local_id
+            });
+            console.log('[OSService] VeiculoModel.create success');
+        } catch (e: any) {
+            console.error('[OSService] ❌ CRASH in VeiculoModel.create:', e.message);
+            console.error('[OSService] Stack:', e.stack);
+            throw e;
+        }
+
+        // 3. Recalcular Totais (Novidade: Garantir que a OS reflita o novo veículo)
+        try {
+            await OSModel.recalculateTotal(os.local_id);
+        } catch (e) {
+            console.error('[osService] Failed to recalculate OS total:', e);
+        }
+
+        // 4. Trigger Sync
         if (!OfflineDebug.isForceOffline()) {
             import('./SyncService').then(m => m.SyncService.processQueue('OS.addVeiculo').catch(e => console.error(e)));
         }
 
         return {
             id: localVeiculo.server_id || localVeiculo.id,
+            localId: localVeiculo.local_id, // Incluir localId no retorno para o UI
             placa: localVeiculo.placa,
             modelo: localVeiculo.modelo || '',
             cor: localVeiculo.cor || '',
@@ -586,13 +655,22 @@ export const osService = {
             }
         }
 
-        // 1. Resolver Veículo Local
+        // 1. Resolver Veículo Local (Prioridade UUID)
         const VeiculoModel = await import('./database/models/VeiculoModel').then(m => m.VeiculoModel);
-        let veiculo = await VeiculoModel.getByServerId(data.veiculoId);
-        if (!veiculo) veiculo = await VeiculoModel.getById(data.veiculoId);
+        let veiculo = null;
+        if (data.veiculoLocalId) {
+            veiculo = await VeiculoModel.getByLocalId(data.veiculoLocalId);
+        }
 
         if (!veiculo) {
-            throw new Error(`Veículo não encontrado: ${data.veiculoId}`);
+            veiculo = await VeiculoModel.getByServerId(data.veiculoId);
+        }
+        if (!veiculo) {
+            veiculo = await VeiculoModel.getById(data.veiculoId);
+        }
+
+        if (!veiculo) {
+            throw new Error(`Veículo não encontrado (ID: ${data.veiculoId} / UUID: ${data.veiculoLocalId})`);
         }
 
         // 2. Salvar localmente
@@ -616,6 +694,7 @@ export const osService = {
 
         return {
             id: localPeca.server_id || localPeca.id,
+            localId: localPeca.local_id,
             nomePeca: localPeca.nome_peca || '',
             valorCobrado: localPeca.valor_cobrado || 0,
             descricao: localPeca.descricao || ''

@@ -34,7 +34,7 @@ export const OSListScreen = () => {
     // Create Modal State
     const [createModalOpen, setCreateModalOpen] = useState(false);
     const [clientes, setClientes] = useState<Cliente[]>([]);
-    const [selectedClientId, setSelectedClientId] = useState<number>(0);
+    const [selectedClient, setSelectedClient] = useState<Cliente | null>(null);
     const [osDate, setOsDate] = useState(new Date().toISOString().split('T')[0]);
     const [osVencimento, setOsVencimento] = useState(new Date().toISOString().split('T')[0]);
     const [isCreating, setIsCreating] = useState(false);
@@ -151,7 +151,7 @@ export const OSListScreen = () => {
     };
 
     const handleCreateOS = async () => {
-        if (selectedClientId === 0) {
+        if (!selectedClient) {
             Alert.alert('Atenção', 'Selecione um cliente.');
             return;
         }
@@ -159,7 +159,8 @@ export const OSListScreen = () => {
         try {
             setIsCreating(true);
             const os = await osService.createOS({
-                clienteId: selectedClientId,
+                clienteId: selectedClient.id || undefined,
+                clienteLocalId: selectedClient.localId!, // Exige localId (validado no type, mas bom garantir)
                 data: osDate,
                 dataVencimento: osVencimento,
             });
@@ -468,11 +469,11 @@ export const OSListScreen = () => {
                                     </View>
                                 ) : (
                                     filteredModalClientes.map(c => {
-                                        const isSelected = selectedClientId === c.id;
+                                        const isSelected = selectedClient?.id === c.id || (c.localId && selectedClient?.localId === c.localId);
                                         return (
                                             <TouchableOpacity
-                                                key={c.id}
-                                                onPress={() => setSelectedClientId(c.id)}
+                                                key={c.id || c.localId}
+                                                onPress={() => setSelectedClient(c)}
                                                 style={{
                                                     flexDirection: 'row',
                                                     alignItems: 'center',

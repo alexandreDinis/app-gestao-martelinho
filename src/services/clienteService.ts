@@ -13,15 +13,29 @@ const Logger = {
 
 export const clienteService = {
     getAll: async (since?: string): Promise<Cliente[]> => {
-        const response = await api.get<Cliente[]>('/clientes', {
-            params: { since }
-        });
-        return response.data;
+        try {
+            const response = await api.get<Cliente[]>('/clientes', {
+                params: { since }
+            });
+            return response.data;
+        } catch (error) {
+            Logger.error('[ClienteService] getAll failed, falling back to local', error);
+            // Fallback: carregar do banco local
+            const localClientes = await ClienteModel.getAll();
+            return localClientes.map(c => ClienteModel.toApiFormat(c));
+        }
     },
 
     getById: async (id: number): Promise<Cliente> => {
-        const response = await api.get<Cliente>(`/clientes/${id}`);
-        return response.data;
+        try {
+            const response = await api.get<Cliente>(`/clientes/${id}`);
+            return response.data;
+        } catch (error) {
+            Logger.error(`[ClienteService] getById(${id}) failed, falling back to local`, error);
+            const local = await ClienteModel.getByServerId(id);
+            if (local) return ClienteModel.toApiFormat(local);
+            throw error;
+        }
     },
 
     /**

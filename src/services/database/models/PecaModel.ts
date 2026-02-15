@@ -63,26 +63,44 @@ export const PecaModel = {
         let veiculoId: number | null = null;
         let veiculoLocalId: string | null = data.veiculoLocalId || null;
 
-        if (data.veiculoId) {
-            const veiculo = await VeiculoModel.getByServerId(data.veiculoId);
-            if (veiculo) {
-                veiculoId = veiculo.id;
-                veiculoLocalId = veiculo.local_id;
-                console.log('[PecaModel] Resolved veiculo from server_id:', veiculo.id);
-            }
-        }
-
-        // Se não achou por server_id (ou não foi passado), tentar pelo local_id (UUID)
-        if (!veiculoId && veiculoLocalId) {
+        // 1. Prioridade absoluta: Buscar por local_id (UUID)
+        if (veiculoLocalId) {
             const veiculo = await databaseService.getFirst<LocalVeiculo>(
                 `SELECT * FROM veiculos_os WHERE local_id = ?`,
                 [veiculoLocalId]
             );
             if (veiculo) {
                 veiculoId = veiculo.id;
-                console.log('[PecaModel] Resolved veiculo from local_id (UUID):', veiculo.id);
+                veiculoLocalId = veiculo.local_id;
+                console.log(`[PecaModel] 🔗 Vinculado via veiculoLocalId ${veiculoLocalId} -> PK ${veiculoId}`);
             }
         }
+
+        // 2. Fallback: Se não achou por local_id, busca por server_id
+        if (!veiculoId && data.veiculoId) {
+            // Tenta primeiro como server_id
+            const veiculoByServer = await databaseService.getFirst<LocalVeiculo>(
+                `SELECT * FROM veiculos_os WHERE server_id = ?`,
+                [data.veiculoId]
+            );
+            if (veiculoByServer) {
+                veiculoId = veiculoByServer.id;
+                veiculoLocalId = veiculoByServer.local_id;
+                console.log(`[PecaModel] 🔗 Vinculado via server_id ${data.veiculoId} -> PK ${veiculoId}`);
+            } else {
+                // Se não é server_id, pode ser PK local
+                const veiculoByPk = await databaseService.getFirst<LocalVeiculo>(
+                    `SELECT * FROM veiculos_os WHERE id = ?`,
+                    [data.veiculoId]
+                );
+                if (veiculoByPk) {
+                    veiculoId = veiculoByPk.id;
+                    veiculoLocalId = veiculoByPk.local_id;
+                    console.log(`[PecaModel] 🔗 Vinculado via PK local ${data.veiculoId} -> LocalId ${veiculoLocalId}`);
+                }
+            }
+        }
+
 
         if (!veiculoId) {
             console.warn('[PecaModel] ⚠️ Could not resolve veiculo_id for peca. It will be orphaned!');

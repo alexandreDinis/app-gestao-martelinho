@@ -139,8 +139,8 @@ export const CreateOSScreen = () => {
     };
 
     const handleCreate = async () => {
-        if (!selectedClient) {
-            Alert.alert('Atenção', 'Selecione um cliente.');
+        if (!selectedClient?.localId) {
+            Alert.alert('Atenção', 'Selecione um cliente válido (ID local ausente). Tente recarregar.');
             return;
         }
         if (!plate || !model) {
@@ -154,6 +154,7 @@ export const CreateOSScreen = () => {
             // 1. Create OS Header
             const os = await osService.createOS({
                 clienteId: selectedClient.id,
+                clienteLocalId: selectedClient.localId,
                 data: new Date().toISOString().split('T')[0],
                 usuarioId: selectedUserId || undefined
             });
@@ -161,6 +162,7 @@ export const CreateOSScreen = () => {
             // 2. Add Vehicle
             await osService.addVeiculo({
                 ordemServicoId: os.id,
+                osLocalId: os.localId, // Grampo de UUID para garantir vínculo correto offline
                 placa: plate.replace(/[^a-zA-Z0-9]/g, '').toUpperCase(),
                 modelo: model,
                 cor: color || 'Não informada'
@@ -398,7 +400,7 @@ export const CreateOSScreen = () => {
                         ) : (
                             <FlatList
                                 data={filteredClients}
-                                keyExtractor={item => item.id.toString()}
+                                keyExtractor={(item) => item.localId || `temp-${item.id}`}
                                 renderItem={({ item }) => (
                                     <TouchableOpacity
                                         onPress={() => selectClient(item)}

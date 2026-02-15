@@ -50,6 +50,7 @@ export interface LocalCliente extends BaseLocalEntity {
     // V7: Sync & Soft Delete
     deleted_at?: string | null;
     server_updated_at?: string | null;
+    correlation_id?: string | null;
 }
 
 export interface LocalOS extends BaseLocalEntity {
