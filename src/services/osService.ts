@@ -319,8 +319,6 @@ export const osService = {
     },
 
     updateOS: async (id: number, data: any): Promise<OrdemServico> => {
-        Logger.info('[OSService] updateOS called', { id, data });
-
         const { isConnected, isInternetReachable } = await OfflineDebug.checkConnectivity();
         const isOnline = isConnected && isInternetReachable && !OfflineDebug.isForceOffline();
 
@@ -355,7 +353,7 @@ export const osService = {
                 try {
                     const { UserModel } = require('./database/models/UserModel');
                     const users = await UserModel.getAll();
-                    const user = users.find((u: any) => u.id === data.usuarioId);
+                    const user = users.find((u: any) => u.id === data.usuarioId || u.server_id === data.usuarioId);
                     if (user) {
                         localData.usuario_nome = user.name;
                         localData.usuario_email = user.email;

@@ -35,6 +35,7 @@ export interface UserResponse {
 
 export interface User {
     id: number;
+    server_id?: number;
     email: string;
     name?: string;
     role?: string;

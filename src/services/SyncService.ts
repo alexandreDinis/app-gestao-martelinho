@@ -1,5 +1,6 @@
 // Services removed to avoid circular dependencies
 import { ClienteModel } from './database/models/ClienteModel';
+import { UserModel } from './database/models/UserModel';
 import { OSModel } from './database/models/OSModel';
 import { VeiculoModel } from './database/models/VeiculoModel';
 import { PecaModel } from './database/models/PecaModel';
@@ -159,13 +160,18 @@ export const SyncService = {
 
             console.log('✅ Sincronização Completa Finalizada!');
 
-            // 6. Update Markers ATOMICALLY (using Server Time)
-            if (typeof serverTime === 'string' && serverTime.length > 10) {
-                await SecureStore.setItemAsync(globalMarkerKey, serverTime);
-                console.log(`✅ [SyncService] Updated last_full_sync_at to Server Time: ${serverTime}`);
-            } else {
-                console.warn('⚠️ serverTime inválido/ausente, não atualizando last_full_sync_at');
+            // 6. Update Markers ATOMICALLY (using Server Time or Fallback)
+            let finalTime = serverTime;
+            if (!finalTime || typeof finalTime !== 'string' || finalTime.length < 10) {
+                console.warn('[SyncService] ⚠️ serverTime inválido/ausente na resposta de status.', finalTime);
+                // Fallback: Use Current Device Time (less safe but breaks loop)
+                // OR use the max updatedAt found? For now, use ISO string of now.
+                finalTime = new Date().toISOString();
+                console.log(`[SyncService] 🔄 Fallback: Updating last_full_sync_at to Device Time: ${finalTime}`);
             }
+
+            await SecureStore.setItemAsync(globalMarkerKey, finalTime);
+            console.log(`✅ [SyncService] Updated last_full_sync_at to ${finalTime}`);
 
             if (serverTenantVersion !== undefined && serverTenantVersion !== null) {
                 const sv = Number(serverTenantVersion);
@@ -260,9 +266,15 @@ export const SyncService = {
 
                 const isDbEmpty = localOSCount === 0 && localClientCount === 0;
 
+                // FIX: If we have data but no marker, we should not assume BOOTSTRAP unless really empty.
+                // If we have data but no marker, it might be a migration case or cleared storage.
+                // In that case, we should assume we need a sync but NOT a destructive bootstrap.
                 if (!lastFullSync && isDbEmpty) {
                     console.log(`[SyncService] ⚠️ Missing marker AND DB Empty (OS=0, Cli=0). Forcing BOOTSTRAP_REQUIRED.`);
                     return { status: 'BOOTSTRAP_REQUIRED', serverTime: null };
+                } else if (!lastFullSync && !isDbEmpty) {
+                    // We have data but lost the marker. Let's start from epoch but NOT say bootstrap is required.
+                    console.warn(`[SyncService] ⚠️ Missing marker but DB has data (OS=${localOSCount}, Cli=${localClientCount}). Recovering sync...`);
                 }
 
                 // Call API with version
@@ -877,6 +889,8 @@ export const SyncService = {
                     delete payload.usuarioId;
                 }
             }
+
+
 
             console.log(`[SyncService] 📤 Sending POST for OS ${localId}...`);
 

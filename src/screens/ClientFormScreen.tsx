@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, ActivityIndicator, KeyboardAvoidingView, Platform } from 'react-native';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { RootStackParamList } from '../navigation/types';
 import { ArrowLeft, Save } from 'lucide-react-native';
@@ -235,143 +235,149 @@ export const ClientFormScreen = () => {
                 </View>
             </View>
 
-            <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
-                {/* Dados Principais */}
-                <Text style={{ color: theme.colors.primary, fontSize: 10, fontWeight: '700', letterSpacing: 2, marginBottom: 12, marginTop: 8 }}>
-                    DADOS PRINCIPAIS
-                </Text>
+            <KeyboardAvoidingView
+                style={{ flex: 1 }}
+                behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+                keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+            >
+                <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 120 }}>
+                    {/* Dados Principais */}
+                    <Text style={{ color: theme.colors.primary, fontSize: 10, fontWeight: '700', letterSpacing: 2, marginBottom: 12, marginTop: 8 }}>
+                        DADOS PRINCIPAIS
+                    </Text>
 
-                <View style={{ gap: 12 }}>
-                    <Input
-                        label="NOME FANTASIA *"
-                        value={formData.nomeFantasia}
-                        onChangeText={(t) => handleChange('nomeFantasia', t)}
-                        placeholder="Ex: Nome Comercial"
-                        error={fieldErrors.nomeFantasia}
-                    />
-                    <Input
-                        label="RAZÃO SOCIAL"
-                        value={formData.razaoSocial}
-                        onChangeText={(t) => handleChange('razaoSocial', t)}
-                        placeholder="Ex: Empresa LTDA"
-                        error={fieldErrors.razaoSocial}
-                    />
+                    <View style={{ gap: 12 }}>
+                        <Input
+                            label="NOME FANTASIA *"
+                            value={formData.nomeFantasia}
+                            onChangeText={(t) => handleChange('nomeFantasia', t)}
+                            placeholder="Ex: Nome Comercial"
+                            error={fieldErrors.nomeFantasia}
+                        />
+                        <Input
+                            label="RAZÃO SOCIAL"
+                            value={formData.razaoSocial}
+                            onChangeText={(t) => handleChange('razaoSocial', t)}
+                            placeholder="Ex: Empresa LTDA"
+                            error={fieldErrors.razaoSocial}
+                        />
 
-                    <View style={{ flexDirection: 'row', gap: 12 }}>
-                        <View style={{ flex: 1 }}>
-                            <Input
-                                label="CNPJ"
-                                value={formData.cnpj || ''}
-                                onChangeText={(t) => handleChange('cnpj', t)}
-                                keyboardType="numeric"
-                            />
-                        </View>
-                        <View style={{ flex: 1 }}>
-                            <Input
-                                label="CPF"
-                                value={formData.cpf || ''}
-                                onChangeText={(t) => handleChange('cpf', t)}
-                                keyboardType="numeric"
-                            />
-                        </View>
-                    </View>
-                </View>
-
-                {/* Contato */}
-                <Text style={{ color: theme.colors.primary, fontSize: 10, fontWeight: '700', letterSpacing: 2, marginBottom: 12, marginTop: 24 }}>
-                    CONTATO
-                </Text>
-
-                <View style={{ gap: 12 }}>
-                    <Input
-                        label="TELEFONE / WHATSAPP"
-                        value={formData.contato}
-                        onChangeText={(t) => handleChange('contato', t)}
-                        keyboardType="phone-pad"
-                        placeholder="Ex: (11) 99999-9999"
-                        error={fieldErrors.contato}
-                    />
-                    <Input
-                        label="EMAIL"
-                        value={formData.email}
-                        onChangeText={(t) => handleChange('email', t)}
-                        keyboardType="email-address"
-                        autoCapitalize="none"
-                        placeholder="Ex: contato@empresa.com"
-                        error={fieldErrors.email}
-                    />
-                </View>
-
-                {/* Endereço */}
-                <Text style={{ color: theme.colors.primary, fontSize: 10, fontWeight: '700', letterSpacing: 2, marginBottom: 12, marginTop: 24 }}>
-                    ENDEREÇO
-                </Text>
-
-                <View style={{ gap: 12 }}>
-                    <Input
-                        label="CEP"
-                        value={formData.cep}
-                        onChangeText={(t) => handleChange('cep', t)}
-                        keyboardType="numeric"
-                        placeholder="Ex: 01310-100"
-                    />
-                    <View style={{ flexDirection: 'row', gap: 12 }}>
-                        <View style={{ flex: 3 }}>
-                            <Input
-                                label="LOGRADOURO"
-                                value={formData.logradouro}
-                                onChangeText={(t) => handleChange('logradouro', t)}
-                                placeholder="Ex: Av. Paulista"
-                                error={fieldErrors.logradouro}
-                            />
-                        </View>
-                        <View style={{ flex: 1 }}>
-                            <Input
-                                label="NÚMERO"
-                                value={formData.numero}
-                                onChangeText={(t) => handleChange('numero', t)}
-                                placeholder="Nº"
-                            />
+                        <View style={{ flexDirection: 'row', gap: 12 }}>
+                            <View style={{ flex: 1 }}>
+                                <Input
+                                    label="CNPJ"
+                                    value={formData.cnpj || ''}
+                                    onChangeText={(t) => handleChange('cnpj', t)}
+                                    keyboardType="numeric"
+                                />
+                            </View>
+                            <View style={{ flex: 1 }}>
+                                <Input
+                                    label="CPF"
+                                    value={formData.cpf || ''}
+                                    onChangeText={(t) => handleChange('cpf', t)}
+                                    keyboardType="numeric"
+                                />
+                            </View>
                         </View>
                     </View>
-                    <Input
-                        label="COMPLEMENTO"
-                        value={formData.complemento || ''}
-                        onChangeText={(t) => handleChange('complemento', t)}
-                        placeholder="Ex: Sala 101"
-                    />
-                    <Input
-                        label="BAIRRO"
-                        value={formData.bairro}
-                        onChangeText={(t) => handleChange('bairro', t)}
-                        placeholder="Ex: Bela Vista"
-                    />
-                    <View style={{ flexDirection: 'row', gap: 12 }}>
-                        <View style={{ flex: 3 }}>
-                            <Input
-                                label="CIDADE"
-                                value={formData.cidade}
-                                onChangeText={(t) => handleChange('cidade', t)}
-                                placeholder="Ex: São Paulo"
-                                error={fieldErrors.cidade}
-                            />
+
+                    {/* Contato */}
+                    <Text style={{ color: theme.colors.primary, fontSize: 10, fontWeight: '700', letterSpacing: 2, marginBottom: 12, marginTop: 24 }}>
+                        CONTATO
+                    </Text>
+
+                    <View style={{ gap: 12 }}>
+                        <Input
+                            label="TELEFONE / WHATSAPP"
+                            value={formData.contato}
+                            onChangeText={(t) => handleChange('contato', t)}
+                            keyboardType="phone-pad"
+                            placeholder="Ex: (11) 99999-9999"
+                            error={fieldErrors.contato}
+                        />
+                        <Input
+                            label="EMAIL"
+                            value={formData.email}
+                            onChangeText={(t) => handleChange('email', t)}
+                            keyboardType="email-address"
+                            autoCapitalize="none"
+                            placeholder="Ex: contato@empresa.com"
+                            error={fieldErrors.email}
+                        />
+                    </View>
+
+                    {/* Endereço */}
+                    <Text style={{ color: theme.colors.primary, fontSize: 10, fontWeight: '700', letterSpacing: 2, marginBottom: 12, marginTop: 24 }}>
+                        ENDEREÇO
+                    </Text>
+
+                    <View style={{ gap: 12 }}>
+                        <Input
+                            label="CEP"
+                            value={formData.cep}
+                            onChangeText={(t) => handleChange('cep', t)}
+                            keyboardType="numeric"
+                            placeholder="Ex: 01310-100"
+                        />
+                        <View style={{ flexDirection: 'row', gap: 12 }}>
+                            <View style={{ flex: 3 }}>
+                                <Input
+                                    label="LOGRADOURO"
+                                    value={formData.logradouro}
+                                    onChangeText={(t) => handleChange('logradouro', t)}
+                                    placeholder="Ex: Av. Paulista"
+                                    error={fieldErrors.logradouro}
+                                />
+                            </View>
+                            <View style={{ flex: 1 }}>
+                                <Input
+                                    label="NÚMERO"
+                                    value={formData.numero}
+                                    onChangeText={(t) => handleChange('numero', t)}
+                                    placeholder="Nº"
+                                />
+                            </View>
                         </View>
-                        <View style={{ flex: 1 }}>
-                            <Input
-                                label="UF"
-                                value={formData.estado}
-                                onChangeText={(t) => handleChange('estado', t)}
-                                maxLength={2}
-                                autoCapitalize="characters"
-                                placeholder="SP"
-                                error={fieldErrors.estado}
-                            />
+                        <Input
+                            label="COMPLEMENTO"
+                            value={formData.complemento || ''}
+                            onChangeText={(t) => handleChange('complemento', t)}
+                            placeholder="Ex: Sala 101"
+                        />
+                        <Input
+                            label="BAIRRO"
+                            value={formData.bairro}
+                            onChangeText={(t) => handleChange('bairro', t)}
+                            placeholder="Ex: Bela Vista"
+                        />
+                        <View style={{ flexDirection: 'row', gap: 12 }}>
+                            <View style={{ flex: 3 }}>
+                                <Input
+                                    label="CIDADE"
+                                    value={formData.cidade}
+                                    onChangeText={(t) => handleChange('cidade', t)}
+                                    placeholder="Ex: São Paulo"
+                                    error={fieldErrors.cidade}
+                                />
+                            </View>
+                            <View style={{ flex: 1 }}>
+                                <Input
+                                    label="UF"
+                                    value={formData.estado}
+                                    onChangeText={(t) => handleChange('estado', t)}
+                                    maxLength={2}
+                                    autoCapitalize="characters"
+                                    placeholder="SP"
+                                    error={fieldErrors.estado}
+                                />
+                            </View>
                         </View>
                     </View>
-                </View>
 
-                <View style={{ height: 40 }} />
-            </ScrollView>
+                    <View style={{ height: 40 }} />
+                </ScrollView>
+            </KeyboardAvoidingView>
         </View>
     );
 };

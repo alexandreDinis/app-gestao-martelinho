@@ -462,7 +462,12 @@ export const OSDetailsScreen = () => {
                                 >
                                     <Picker.Item label="Selecione..." value={null} style={{ color: '#666' }} />
                                     {Array.isArray(users) && users.map(u => (
-                                        <Picker.Item key={u.id} label={u.name || u.email} value={u.id} style={{ color: '#000' }} />
+                                        <Picker.Item
+                                            key={u.id}
+                                            label={u.name || u.email}
+                                            value={u.server_id || u.id}
+                                            style={{ color: '#000' }}
+                                        />
                                     ))}
                                 </Picker>
                             </View>
