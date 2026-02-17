@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, KeyboardAvoidingView, Platform, Alert, Modal } from 'react-native';
+import { View, Text, TouchableOpacity, KeyboardAvoidingView, Platform, Alert, Modal, Image } from 'react-native';
 import { useAuth } from '../contexts/AuthContext';
 import { Lock, Mail, Eye, EyeOff, Fingerprint } from 'lucide-react-native';
 import { Button, Input, Card } from '../components/ui';
@@ -145,21 +145,16 @@ export const LoginScreen = () => {
 
             {/* Logo */}
             <View style={{ alignItems: 'center', marginBottom: 40 }}>
-                <View
+                <Image
+                    source={require('../../assets/icon.png')}
                     style={{
-                        width: 64,
-                        height: 64,
-                        backgroundColor: theme.colors.primaryMuted,
-                        borderWidth: 2,
-                        borderColor: theme.colors.primary,
-                        borderRadius: 12,
-                        alignItems: 'center',
-                        justifyContent: 'center',
+                        width: 96,
+                        height: 96,
+                        borderRadius: 24,
                         marginBottom: 16,
                     }}
-                >
-                    <Text style={{ color: theme.colors.primary, fontWeight: 'bold', fontSize: 28 }}>S</Text>
-                </View>
+                    resizeMode="contain"
+                />
                 <Text
                     style={{
                         fontSize: 24,

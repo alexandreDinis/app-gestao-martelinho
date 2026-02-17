@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, ActivityIndicator, Alert, Modal, TextInput, RefreshControl, DeviceEventEmitter } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, ActivityIndicator, Alert, Modal, TextInput, RefreshControl, DeviceEventEmitter, KeyboardAvoidingView, Platform } from 'react-native';
 import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../navigation/types';
@@ -716,180 +716,190 @@ export const OSDetailsScreen = () => {
 
             {/* Add Vehicle Modal */}
             <Modal visible={veiculoModal} animationType="slide" transparent>
-                <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.9)', justifyContent: 'flex-end' }}>
-                    <View
-                        style={{
-                            backgroundColor: theme.colors.backgroundSecondary,
-                            borderTopLeftRadius: 24,
-                            borderTopRightRadius: 24,
-                            padding: 24,
-                            borderWidth: 1,
-                            borderColor: theme.colors.border,
-                        }}
-                    >
-                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-                            <Text style={{ color: theme.colors.text, fontSize: 18, fontWeight: '900' }}>Novo Veículo</Text>
-                            <TouchableOpacity onPress={() => setVeiculoModal(false)}>
-                                <X size={24} color={theme.colors.textMuted} />
-                            </TouchableOpacity>
-                        </View>
-
-                        <View style={{ marginBottom: 16 }}>
-                            <SimplePlateInput
-                                value={veiculoForm.placa}
-                                onChange={(val) => setVeiculoForm({ ...veiculoForm, placa: val })}
-                                onSearch={handleCheckPlate}
-                                isSearching={updating}
-                                buttonLabel="VERIFICAR PLACA"
-                            />
-                        </View>
-                        {existingVehicle && (
-                            <Text style={{ color: theme.colors.warning, fontSize: 10, marginBottom: 16, textAlign: 'center' }}>
-                                ⚠️ Dados preenchidos automaticamente de serviço anterior
-                            </Text>
-                        )}
-
-                        <Text style={{ color: theme.colors.primary, fontSize: 10, fontWeight: '700', letterSpacing: 1, marginBottom: 6 }}>MODELO</Text>
-                        <TextInput
-                            placeholder="Ex: Civic, Corolla..."
-                            placeholderTextColor={theme.colors.textMuted}
-                            value={veiculoForm.modelo}
-                            onChangeText={(val) => setVeiculoForm({ ...veiculoForm, modelo: val })}
+                <KeyboardAvoidingView
+                    style={{ flex: 1 }}
+                    behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+                >
+                    <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.9)', justifyContent: 'flex-end' }}>
+                        <View
                             style={{
-                                backgroundColor: 'rgba(0,0,0,0.4)',
+                                backgroundColor: theme.colors.backgroundSecondary,
+                                borderTopLeftRadius: 24,
+                                borderTopRightRadius: 24,
+                                padding: 24,
                                 borderWidth: 1,
                                 borderColor: theme.colors.border,
-                                color: theme.colors.text,
-                                padding: 12,
-                                marginBottom: 16,
-                            }}
-                        />
-
-                        <Text style={{ color: theme.colors.primary, fontSize: 10, fontWeight: '700', letterSpacing: 1, marginBottom: 6 }}>COR</Text>
-                        <TextInput
-                            placeholder="Ex: Prata, Preto..."
-                            placeholderTextColor={theme.colors.textMuted}
-                            value={veiculoForm.cor}
-                            onChangeText={(val) => setVeiculoForm({ ...veiculoForm, cor: val })}
-                            style={{
-                                backgroundColor: 'rgba(0,0,0,0.4)',
-                                borderWidth: 1,
-                                borderColor: theme.colors.border,
-                                color: theme.colors.text,
-                                padding: 12,
-                                marginBottom: 24,
-                            }}
-                        />
-
-                        <TouchableOpacity
-                            onPress={handleAddVeiculo}
-                            disabled={updating}
-                            style={{
-                                backgroundColor: theme.colors.primary,
-                                padding: 16,
-                                borderRadius: 8,
-                                alignItems: 'center',
                             }}
                         >
-                            <Text style={{ color: '#000', fontWeight: '700', fontSize: 14 }}>
-                                {updating ? 'ADICIONANDO...' : 'ADICIONAR VEÍCULO'}
-                            </Text>
-                        </TouchableOpacity>
+                            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+                                <Text style={{ color: theme.colors.text, fontSize: 18, fontWeight: '900' }}>Novo Veículo</Text>
+                                <TouchableOpacity onPress={() => setVeiculoModal(false)}>
+                                    <X size={24} color={theme.colors.textMuted} />
+                                </TouchableOpacity>
+                            </View>
+
+                            <View style={{ marginBottom: 16 }}>
+                                <SimplePlateInput
+                                    value={veiculoForm.placa}
+                                    onChange={(val) => setVeiculoForm({ ...veiculoForm, placa: val })}
+                                    onSearch={handleCheckPlate}
+                                    isSearching={updating}
+                                    buttonLabel="VERIFICAR PLACA"
+                                />
+                            </View>
+                            {existingVehicle && (
+                                <Text style={{ color: theme.colors.warning, fontSize: 10, marginBottom: 16, textAlign: 'center' }}>
+                                    ⚠️ Dados preenchidos automaticamente de serviço anterior
+                                </Text>
+                            )}
+
+                            <Text style={{ color: theme.colors.primary, fontSize: 10, fontWeight: '700', letterSpacing: 1, marginBottom: 6 }}>MODELO</Text>
+                            <TextInput
+                                placeholder="Ex: Civic, Corolla..."
+                                placeholderTextColor={theme.colors.textMuted}
+                                value={veiculoForm.modelo}
+                                onChangeText={(val) => setVeiculoForm({ ...veiculoForm, modelo: val })}
+                                style={{
+                                    backgroundColor: 'rgba(0,0,0,0.4)',
+                                    borderWidth: 1,
+                                    borderColor: theme.colors.border,
+                                    color: theme.colors.text,
+                                    padding: 12,
+                                    marginBottom: 16,
+                                }}
+                            />
+
+                            <Text style={{ color: theme.colors.primary, fontSize: 10, fontWeight: '700', letterSpacing: 1, marginBottom: 6 }}>COR</Text>
+                            <TextInput
+                                placeholder="Ex: Prata, Preto..."
+                                placeholderTextColor={theme.colors.textMuted}
+                                value={veiculoForm.cor}
+                                onChangeText={(val) => setVeiculoForm({ ...veiculoForm, cor: val })}
+                                style={{
+                                    backgroundColor: 'rgba(0,0,0,0.4)',
+                                    borderWidth: 1,
+                                    borderColor: theme.colors.border,
+                                    color: theme.colors.text,
+                                    padding: 12,
+                                    marginBottom: 24,
+                                }}
+                            />
+
+                            <TouchableOpacity
+                                onPress={handleAddVeiculo}
+                                disabled={updating}
+                                style={{
+                                    backgroundColor: theme.colors.primary,
+                                    padding: 16,
+                                    borderRadius: 8,
+                                    alignItems: 'center',
+                                }}
+                            >
+                                <Text style={{ color: '#000', fontWeight: '700', fontSize: 14 }}>
+                                    {updating ? 'ADICIONANDO...' : 'ADICIONAR VEÍCULO'}
+                                </Text>
+                            </TouchableOpacity>
+                        </View>
                     </View>
-                </View>
+                </KeyboardAvoidingView>
             </Modal>
 
             {/* Add Service Modal */}
             <Modal visible={pecaModal.isOpen} animationType="slide" transparent>
-                <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.9)', justifyContent: 'flex-end' }}>
-                    <View
-                        style={{
-                            backgroundColor: theme.colors.backgroundSecondary,
-                            borderTopLeftRadius: 24,
-                            borderTopRightRadius: 24,
-                            padding: 24,
-                            borderWidth: 1,
-                            borderColor: theme.colors.border,
-                            maxHeight: '80%',
-                        }}
-                    >
-                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-                            <Text style={{ color: theme.colors.text, fontSize: 18, fontWeight: '900' }}>Adicionar Serviço</Text>
-                            <TouchableOpacity onPress={() => setPecaModal({ isOpen: false, veiculoId: null })}>
-                                <X size={24} color={theme.colors.textMuted} />
-                            </TouchableOpacity>
-                        </View>
-
-                        <Text style={{ color: theme.colors.primary, fontSize: 10, fontWeight: '700', letterSpacing: 1, marginBottom: 6 }}>ITEM DO CATÁLOGO</Text>
-                        <ScrollView style={{ maxHeight: 200, backgroundColor: 'rgba(0,0,0,0.4)', borderWidth: 1, borderColor: theme.colors.border, marginBottom: 16 }}>
-                            {catalogo.map((item) => (
-                                <TouchableOpacity
-                                    key={item.id}
-                                    onPress={() => onSelectPeca(item.id.toString())}
-                                    style={{
-                                        padding: 12,
-                                        borderBottomWidth: 1,
-                                        borderBottomColor: theme.colors.border,
-                                        backgroundColor: pecaForm.tipoPecaId === item.id.toString() ? theme.colors.primaryMuted : 'transparent',
-                                    }}
-                                >
-                                    <Text style={{ color: theme.colors.text, fontWeight: '600' }}>{item.nome}</Text>
-                                    <Text style={{ color: theme.colors.textMuted, fontSize: 11 }}>{formatCurrency(item.valorPadrao)}</Text>
-                                </TouchableOpacity>
-                            ))}
-                        </ScrollView>
-
-                        <Text style={{ color: theme.colors.primary, fontSize: 10, fontWeight: '700', letterSpacing: 1, marginBottom: 6 }}>VALOR COBRADO (R$)</Text>
-                        <TextInput
-                            placeholder="Deixe vazio para usar padrão"
-                            placeholderTextColor={theme.colors.textMuted}
-                            value={pecaForm.valorCobrado}
-                            onChangeText={(val) => setPecaForm({ ...pecaForm, valorCobrado: val })}
-                            keyboardType="numeric"
+                <KeyboardAvoidingView
+                    style={{ flex: 1 }}
+                    behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+                >
+                    <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.9)', justifyContent: 'flex-end' }}>
+                        <View
                             style={{
-                                backgroundColor: 'rgba(0,0,0,0.4)',
+                                backgroundColor: theme.colors.backgroundSecondary,
+                                borderTopLeftRadius: 24,
+                                borderTopRightRadius: 24,
+                                padding: 24,
                                 borderWidth: 1,
                                 borderColor: theme.colors.border,
-                                color: theme.colors.text,
-                                padding: 12,
-                                marginBottom: 16,
-                            }}
-                        />
-
-                        <Text style={{ color: theme.colors.primary, fontSize: 10, fontWeight: '700', letterSpacing: 1, marginBottom: 6 }}>OBSERVAÇÕES</Text>
-                        <TextInput
-                            placeholder="Opcional..."
-                            placeholderTextColor={theme.colors.textMuted}
-                            value={pecaForm.descricao}
-                            onChangeText={(val) => setPecaForm({ ...pecaForm, descricao: val })}
-                            multiline
-                            style={{
-                                backgroundColor: 'rgba(0,0,0,0.4)',
-                                borderWidth: 1,
-                                borderColor: theme.colors.border,
-                                color: theme.colors.text,
-                                padding: 12,
-                                marginBottom: 24,
-                                minHeight: 60,
-                            }}
-                        />
-
-                        <TouchableOpacity
-                            onPress={handleAddPeca}
-                            disabled={updating}
-                            style={{
-                                backgroundColor: theme.colors.primary,
-                                padding: 16,
-                                borderRadius: 8,
-                                alignItems: 'center',
+                                maxHeight: '80%',
                             }}
                         >
-                            <Text style={{ color: '#000', fontWeight: '700', fontSize: 14 }}>
-                                {updating ? 'ADICIONANDO...' : 'ADICIONAR SERVIÇO'}
-                            </Text>
-                        </TouchableOpacity>
+                            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+                                <Text style={{ color: theme.colors.text, fontSize: 18, fontWeight: '900' }}>Adicionar Serviço</Text>
+                                <TouchableOpacity onPress={() => setPecaModal({ isOpen: false, veiculoId: null })}>
+                                    <X size={24} color={theme.colors.textMuted} />
+                                </TouchableOpacity>
+                            </View>
+
+                            <Text style={{ color: theme.colors.primary, fontSize: 10, fontWeight: '700', letterSpacing: 1, marginBottom: 6 }}>ITEM DO CATÁLOGO</Text>
+                            <ScrollView style={{ maxHeight: 200, backgroundColor: 'rgba(0,0,0,0.4)', borderWidth: 1, borderColor: theme.colors.border, marginBottom: 16 }}>
+                                {catalogo.map((item) => (
+                                    <TouchableOpacity
+                                        key={item.id}
+                                        onPress={() => onSelectPeca(item.id.toString())}
+                                        style={{
+                                            padding: 12,
+                                            borderBottomWidth: 1,
+                                            borderBottomColor: theme.colors.border,
+                                            backgroundColor: pecaForm.tipoPecaId === item.id.toString() ? theme.colors.primaryMuted : 'transparent',
+                                        }}
+                                    >
+                                        <Text style={{ color: theme.colors.text, fontWeight: '600' }}>{item.nome}</Text>
+                                        <Text style={{ color: theme.colors.textMuted, fontSize: 11 }}>{formatCurrency(item.valorPadrao)}</Text>
+                                    </TouchableOpacity>
+                                ))}
+                            </ScrollView>
+
+                            <Text style={{ color: theme.colors.primary, fontSize: 10, fontWeight: '700', letterSpacing: 1, marginBottom: 6 }}>VALOR COBRADO (R$)</Text>
+                            <TextInput
+                                placeholder="Deixe vazio para usar padrão"
+                                placeholderTextColor={theme.colors.textMuted}
+                                value={pecaForm.valorCobrado}
+                                onChangeText={(val) => setPecaForm({ ...pecaForm, valorCobrado: val })}
+                                keyboardType="numeric"
+                                style={{
+                                    backgroundColor: 'rgba(0,0,0,0.4)',
+                                    borderWidth: 1,
+                                    borderColor: theme.colors.border,
+                                    color: theme.colors.text,
+                                    padding: 12,
+                                    marginBottom: 16,
+                                }}
+                            />
+
+                            <Text style={{ color: theme.colors.primary, fontSize: 10, fontWeight: '700', letterSpacing: 1, marginBottom: 6 }}>OBSERVAÇÕES</Text>
+                            <TextInput
+                                placeholder="Opcional..."
+                                placeholderTextColor={theme.colors.textMuted}
+                                value={pecaForm.descricao}
+                                onChangeText={(val) => setPecaForm({ ...pecaForm, descricao: val })}
+                                multiline
+                                style={{
+                                    backgroundColor: 'rgba(0,0,0,0.4)',
+                                    borderWidth: 1,
+                                    borderColor: theme.colors.border,
+                                    color: theme.colors.text,
+                                    padding: 12,
+                                    marginBottom: 24,
+                                    minHeight: 60,
+                                }}
+                            />
+
+                            <TouchableOpacity
+                                onPress={handleAddPeca}
+                                disabled={updating}
+                                style={{
+                                    backgroundColor: theme.colors.primary,
+                                    padding: 16,
+                                    borderRadius: 8,
+                                    alignItems: 'center',
+                                }}
+                            >
+                                <Text style={{ color: '#000', fontWeight: '700', fontSize: 14 }}>
+                                    {updating ? 'ADICIONANDO...' : 'ADICIONAR SERVIÇO'}
+                                </Text>
+                            </TouchableOpacity>
+                        </View>
                     </View>
-                </View>
+                </KeyboardAvoidingView>
             </Modal>
         </View>
     );

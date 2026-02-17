@@ -3,11 +3,10 @@ import { View, Text, FlatList, TouchableOpacity, RefreshControl, TextInput, Moda
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { FileText, Calendar, DollarSign, Search, Clock, CheckCircle, Ban, Plus, User, ChevronRight, Trash2 } from 'lucide-react-native';
 import { theme } from '../theme';
-import { Card, OSStatusBadge } from '../components/ui';
+import { Card, OSStatusBadge, NetworkStatusDot } from '../components/ui';
 import { osService } from '../services/osService';
 import { SyncService } from '../services/SyncService';
 import { OrdemServico, OSStatus, Cliente } from '../types';
-import { OfflineDebug } from '../utils/OfflineDebug';
 import { useSmartPolling } from '../hooks/useSmartPolling';
 
 type TabType = 'iniciadas' | 'finalizadas' | 'canceladas' | 'atrasadas';
@@ -258,12 +257,6 @@ export const OSListScreen = () => {
         </TouchableOpacity>
     );
 
-    const toggleOfflineMode = () => {
-        const newMode = !OfflineDebug.isForceOffline();
-        OfflineDebug.setForceOffline(newMode);
-        // Forçar nova busca (que vai olhar o modo offline atualizado)
-        fetchOrdens();
-    };
 
     return (
         <View style={{ flex: 1, backgroundColor: theme.colors.background }}>
@@ -284,6 +277,7 @@ export const OSListScreen = () => {
                         <Text style={{ color: theme.colors.primary, fontSize: 20, fontWeight: '900', marginLeft: 8, letterSpacing: 2 }}>
                             ORDENS DE SERVIÇO
                         </Text>
+                        <NetworkStatusDot />
                         {pendingSyncCount > 0 && (
                             <View style={{
                                 backgroundColor: theme.colors.error,
@@ -298,30 +292,6 @@ export const OSListScreen = () => {
                             </View>
                         )}
                     </View>
-
-                    {/* Offline Toggle */}
-                    <TouchableOpacity
-                        onPress={toggleOfflineMode}
-                        style={{
-                            flexDirection: 'row',
-                            alignItems: 'center',
-                            backgroundColor: OfflineDebug.isForceOffline() ? 'rgba(239, 68, 68, 0.2)' : 'rgba(34, 197, 94, 0.2)',
-                            paddingHorizontal: 8,
-                            paddingVertical: 4,
-                            borderRadius: 12,
-                            borderWidth: 1,
-                            borderColor: OfflineDebug.isForceOffline() ? theme.colors.error : theme.colors.success
-                        }}
-                    >
-                        <Text style={{
-                            color: OfflineDebug.isForceOffline() ? theme.colors.error : theme.colors.success,
-                            fontSize: 10,
-                            fontWeight: '700',
-                            marginRight: 4
-                        }}>
-                            {OfflineDebug.isForceOffline() ? '✈️ OFF' : '🌐 ON'}
-                        </Text>
-                    </TouchableOpacity>
                 </View>
 
                 {/* Tabs */}

@@ -4,12 +4,13 @@ import Toast from 'react-native-toast-message';
 import { View, Text, TouchableOpacity, ScrollView, RefreshControl, TextInput, Alert } from 'react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../contexts/AuthContext';
-import { LogOut, Plus, Users, Search, Wrench, CheckCircle, Car, Package, Activity, DollarSign, FileText } from 'lucide-react-native';
+import { Plus, Users, Search, Wrench, CheckCircle, Car, Package, Activity, DollarSign, FileText } from 'lucide-react-native';
 import { osService } from '../services/osService';
 import * as SecureStore from 'expo-secure-store';
 import { OrdemServico } from '../types';
 import { theme } from '../theme';
-import { Card } from '../components/ui';
+import { Card, NetworkStatusDot } from '../components/ui';
+import { UserMenu } from '../components/ui';
 import { VehicleHistoryModal } from '../components/modals/VehicleHistoryModal';
 import { CyberpunkAlert, CyberpunkAlertProps } from '../components/ui/CyberpunkAlert';
 import { SimplePlateInput } from '../components/forms/SimplePlateInput';
@@ -21,7 +22,7 @@ const limparPlaca = (placa: string) => placa.replace(/[^a-zA-Z0-9]/g, '').toUppe
 
 export const DashboardScreen = () => {
     const navigation = useNavigation<any>();
-    const { user, signOut } = useAuth();
+    const { user } = useAuth();
 
     // Plate search state
     const [searchPlate, setSearchPlate] = useState('');
@@ -265,22 +266,14 @@ export const DashboardScreen = () => {
                     <Text style={{ color: theme.colors.textMuted, fontSize: 9, letterSpacing: 2, fontWeight: '700' }}>
                         SISTEMA_COMISSÃO_V2
                     </Text>
-                    <Text style={{ color: theme.colors.primary, fontSize: 20, fontWeight: '900', letterSpacing: 2, fontStyle: 'italic' }}>
-                        PAINEL OPERACIONAL
-                    </Text>
+                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                        <Text style={{ color: theme.colors.primary, fontSize: 20, fontWeight: '900', letterSpacing: 2, fontStyle: 'italic' }}>
+                            PAINEL OPERACIONAL
+                        </Text>
+                        <NetworkStatusDot />
+                    </View>
                 </View>
-                <TouchableOpacity
-                    onPress={signOut}
-                    style={{
-                        padding: 10,
-                        backgroundColor: 'rgba(239, 68, 68, 0.1)',
-                        borderWidth: 1,
-                        borderColor: 'rgba(239, 68, 68, 0.3)',
-                        borderRadius: 8,
-                    }}
-                >
-                    <LogOut size={20} color={theme.colors.error} />
-                </TouchableOpacity>
+                <UserMenu />
             </View>
 
             <ScrollView

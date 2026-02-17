@@ -6,7 +6,7 @@ import { Picker } from '@react-native-picker/picker'; // Moved import to top
 import { despesaService } from '../services/despesaService';
 import { cartaoService } from '../services/cartaoService';
 import { theme } from '../theme';
-import { Card, Input, Button } from '../components/ui';
+import { Card, Input, Button, NetworkStatusDot } from '../components/ui';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../navigation/types';
 
@@ -258,9 +258,12 @@ export const LancamentoScreen = () => {
                     <ChevronLeft size={24} color={theme.colors.primary} />
                 </TouchableOpacity>
                 <View style={{ flex: 1 }}>
-                    <Text style={{ color: theme.colors.primary, fontSize: 18, fontWeight: '900', letterSpacing: 1 }}>
-                        NOVA DESPESA
-                    </Text>
+                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                        <Text style={{ color: theme.colors.primary, fontSize: 18, fontWeight: '900', letterSpacing: 1 }}>
+                            NOVA DESPESA
+                        </Text>
+                        <NetworkStatusDot />
+                    </View>
                     <Text style={{ color: theme.colors.textMuted, fontSize: 10, letterSpacing: 1 }}>
                         Registrar saída de caixa
                     </Text>

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, TextInput, TouchableOpacity, ScrollView, Alert, ActivityIndicator, FlatList, Modal } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, ScrollView, Alert, ActivityIndicator, FlatList, Modal, KeyboardAvoidingView, Platform } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { ChevronLeft, Search, User, Car, Calendar, CheckCircle, X } from 'lucide-react-native';
@@ -9,18 +9,17 @@ import { userService } from '../services/userService';
 import { Cliente } from '../types';
 import { RootStackParamList } from '../navigation/types';
 import { theme } from '../theme';
-import { Card, Button, Input } from '../components/ui';
+import { Card, Button, Input, NetworkStatusDot } from '../components/ui';
 import { SimplePlateInput } from '../components/forms/SimplePlateInput';
 import Toast from 'react-native-toast-message';
 
-import { OfflineDebug } from '../utils/OfflineDebug';
+
 import { showApiErrorToast } from '../utils/apiErrorUtils';
 
 // ...
 
 export const CreateOSScreen = () => {
     const navigation = useNavigation<StackNavigationProp<RootStackParamList>>();
-    const [isForceOffline, setIsForceOffline] = useState(OfflineDebug.isForceOffline());
 
     // Form State
     const [selectedClient, setSelectedClient] = useState<Cliente | null>(null);
@@ -38,11 +37,6 @@ export const CreateOSScreen = () => {
     const [loadingClients, setLoadingClients] = useState(false);
     const [submitting, setSubmitting] = useState(false);
 
-    const toggleOfflineMode = () => {
-        const newMode = !OfflineDebug.isForceOffline();
-        OfflineDebug.setForceOffline(newMode);
-        setIsForceOffline(newMode);
-    };
 
     useEffect(() => {
         if (showClientModal) {
@@ -206,145 +200,130 @@ export const CreateOSScreen = () => {
                         <ChevronLeft size={24} color={theme.colors.primary} />
                     </TouchableOpacity>
                     <View>
-                        <Text style={{ color: theme.colors.primary, fontSize: 18, fontWeight: '900', letterSpacing: 1 }}>NOVA OS</Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                            <Text style={{ color: theme.colors.primary, fontSize: 18, fontWeight: '900', letterSpacing: 1 }}>NOVA OS</Text>
+                            <NetworkStatusDot />
+                        </View>
                         <Text style={{ color: theme.colors.textMuted, fontSize: 10, letterSpacing: 1 }}>Preencha os dados iniciais</Text>
                     </View>
                 </View>
-
-                {/* Offline Toggle */}
-                <TouchableOpacity
-                    onPress={toggleOfflineMode}
-                    style={{
-                        flexDirection: 'row',
-                        alignItems: 'center',
-                        backgroundColor: isForceOffline ? 'rgba(239, 68, 68, 0.2)' : 'rgba(34, 197, 94, 0.2)',
-                        paddingHorizontal: 8,
-                        paddingVertical: 4,
-                        borderRadius: 12,
-                        borderWidth: 1,
-                        borderColor: isForceOffline ? theme.colors.error : theme.colors.success
-                    }}
-                >
-                    <Text style={{
-                        color: isForceOffline ? theme.colors.error : theme.colors.success,
-                        fontSize: 10,
-                        fontWeight: '700',
-                        marginRight: 4
-                    }}>
-                        {isForceOffline ? '✈️ OFF' : '🌐 ON'}
-                    </Text>
-                </TouchableOpacity>
             </View>
 
-            <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16 }}>
-                {/* Client Selection */}
-                <Text style={{ color: theme.colors.primary, fontSize: 10, fontWeight: '700', letterSpacing: 2, marginBottom: 8 }}>
-                    CLIENTE
-                </Text>
-                <TouchableOpacity onPress={() => setShowClientModal(true)}>
-                    <Card style={{ marginBottom: 24 }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                            <View
-                                style={{
-                                    width: 40,
-                                    height: 40,
-                                    backgroundColor: theme.colors.primaryMuted,
-                                    borderRadius: 20,
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    marginRight: 12,
-                                }}
+            <KeyboardAvoidingView
+                style={{ flex: 1 }}
+                behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+                keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+            >
+                <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16, paddingBottom: 100 }}>
+                    {/* Client Selection */}
+                    <Text style={{ color: theme.colors.primary, fontSize: 10, fontWeight: '700', letterSpacing: 2, marginBottom: 8 }}>
+                        CLIENTE
+                    </Text>
+                    <TouchableOpacity onPress={() => setShowClientModal(true)}>
+                        <Card style={{ marginBottom: 24 }}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                <View
+                                    style={{
+                                        width: 40,
+                                        height: 40,
+                                        backgroundColor: theme.colors.primaryMuted,
+                                        borderRadius: 20,
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        marginRight: 12,
+                                    }}
+                                >
+                                    <User size={20} color={theme.colors.primary} />
+                                </View>
+                                <View style={{ flex: 1 }}>
+                                    {selectedClient ? (
+                                        <>
+                                            <Text style={{ color: theme.colors.text, fontSize: 14, fontWeight: '700' }}>
+                                                {selectedClient.nomeFantasia || selectedClient.razaoSocial}
+                                            </Text>
+                                            <Text style={{ color: theme.colors.textMuted, fontSize: 11 }}>
+                                                {selectedClient.cpf || selectedClient.cnpj}
+                                            </Text>
+                                        </>
+                                    ) : (
+                                        <Text style={{ color: theme.colors.textMuted, fontSize: 14 }}>Toque para selecionar...</Text>
+                                    )}
+                                </View>
+                                <Search size={18} color={theme.colors.textMuted} />
+                            </View>
+                        </Card>
+                    </TouchableOpacity>
+
+
+
+                    {/* Responsible User Selection */}
+                    <Text style={{ color: theme.colors.primary, fontSize: 10, fontWeight: '700', letterSpacing: 2, marginBottom: 8 }}>
+                        RESPONSÁVEL (VENDEDOR)
+                    </Text>
+                    <Card style={{ marginBottom: 24, padding: 0 }}>
+                        <View style={{ borderRadius: 8, overflow: 'hidden' }}>
+                            <Picker
+                                selectedValue={selectedUserId}
+                                onValueChange={(itemValue) => setSelectedUserId(itemValue)}
+                                style={{ color: theme.colors.text, backgroundColor: 'transparent' }}
+                                dropdownIconColor={theme.colors.primary}
                             >
-                                <User size={20} color={theme.colors.primary} />
-                            </View>
-                            <View style={{ flex: 1 }}>
-                                {selectedClient ? (
-                                    <>
-                                        <Text style={{ color: theme.colors.text, fontSize: 14, fontWeight: '700' }}>
-                                            {selectedClient.nomeFantasia || selectedClient.razaoSocial}
-                                        </Text>
-                                        <Text style={{ color: theme.colors.textMuted, fontSize: 11 }}>
-                                            {selectedClient.cpf || selectedClient.cnpj}
-                                        </Text>
-                                    </>
-                                ) : (
-                                    <Text style={{ color: theme.colors.textMuted, fontSize: 14 }}>Toque para selecionar...</Text>
-                                )}
-                            </View>
-                            <Search size={18} color={theme.colors.textMuted} />
+                                <Picker.Item label="Selecione o responsável..." value={null} style={{ color: '#666' }} />
+                                {users.map(user => (
+                                    <Picker.Item key={user.id} label={user.name || user.email} value={user.id} style={{ color: '#000' }} />
+                                ))}
+                            </Picker>
                         </View>
                     </Card>
-                </TouchableOpacity>
 
-
-
-                {/* Responsible User Selection */}
-                <Text style={{ color: theme.colors.primary, fontSize: 10, fontWeight: '700', letterSpacing: 2, marginBottom: 8 }}>
-                    RESPONSÁVEL (VENDEDOR)
-                </Text>
-                <Card style={{ marginBottom: 24, padding: 0 }}>
-                    <View style={{ borderRadius: 8, overflow: 'hidden' }}>
-                        <Picker
-                            selectedValue={selectedUserId}
-                            onValueChange={(itemValue) => setSelectedUserId(itemValue)}
-                            style={{ color: theme.colors.text, backgroundColor: 'transparent' }}
-                            dropdownIconColor={theme.colors.primary}
-                        >
-                            <Picker.Item label="Selecione o responsável..." value={null} style={{ color: '#666' }} />
-                            {users.map(user => (
-                                <Picker.Item key={user.id} label={user.name || user.email} value={user.id} style={{ color: '#000' }} />
-                            ))}
-                        </Picker>
-                    </View>
-                </Card>
-
-                {/* Vehicle Form */}
-                <Text style={{ color: theme.colors.primary, fontSize: 10, fontWeight: '700', letterSpacing: 2, marginBottom: 8 }}>
-                    VEÍCULO
-                </Text>
-                <Card style={{ marginBottom: 24 }}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 16 }}>
-                        <Car size={18} color={theme.colors.primary} />
-                        <Text style={{ color: theme.colors.textSecondary, fontSize: 12, marginLeft: 8 }}>Dados do veículo</Text>
-                    </View>
-
-                    <View style={{ marginBottom: 16 }}>
-                        <SimplePlateInput
-                            value={plate}
-                            onChange={setPlate}
-                            onSearch={handleCheckPlate}
-                            isSearching={loadingPlate}
-                            buttonLabel="VERIFICAR PLACA"
-                        />
-                    </View>
-                    <Input
-                        label="MODELO"
-                        placeholder="Ex: Fiat Uno"
-                        value={model}
-                        onChangeText={setModel}
-                        containerStyle={{ marginBottom: 16 }}
-                    />
-                    <Input
-                        label="COR"
-                        placeholder="Ex: Prata"
-                        value={color}
-                        onChangeText={setColor}
-                    />
-                </Card>
-
-                {/* Date Info */}
-                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginBottom: 24 }}>
-                    <Calendar size={14} color={theme.colors.textMuted} />
-                    <Text style={{ color: theme.colors.textMuted, fontSize: 11, marginLeft: 8 }}>
-                        Data de abertura: {new Date().toLocaleDateString('pt-BR')}
+                    {/* Vehicle Form */}
+                    <Text style={{ color: theme.colors.primary, fontSize: 10, fontWeight: '700', letterSpacing: 2, marginBottom: 8 }}>
+                        VEÍCULO
                     </Text>
-                </View>
+                    <Card style={{ marginBottom: 24 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 16 }}>
+                            <Car size={18} color={theme.colors.primary} />
+                            <Text style={{ color: theme.colors.textSecondary, fontSize: 12, marginLeft: 8 }}>Dados do veículo</Text>
+                        </View>
 
-                {/* Submit Button */}
-                <Button onPress={handleCreate} loading={submitting} disabled={submitting}>
-                    {submitting ? 'CRIANDO...' : 'CRIAR ORDEM >>'}
-                </Button>
-            </ScrollView >
+                        <View style={{ marginBottom: 16 }}>
+                            <SimplePlateInput
+                                value={plate}
+                                onChange={setPlate}
+                                onSearch={handleCheckPlate}
+                                isSearching={loadingPlate}
+                                buttonLabel="VERIFICAR PLACA"
+                            />
+                        </View>
+                        <Input
+                            label="MODELO"
+                            placeholder="Ex: Fiat Uno"
+                            value={model}
+                            onChangeText={setModel}
+                            containerStyle={{ marginBottom: 16 }}
+                        />
+                        <Input
+                            label="COR"
+                            placeholder="Ex: Prata"
+                            value={color}
+                            onChangeText={setColor}
+                        />
+                    </Card>
+
+                    {/* Date Info */}
+                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginBottom: 24 }}>
+                        <Calendar size={14} color={theme.colors.textMuted} />
+                        <Text style={{ color: theme.colors.textMuted, fontSize: 11, marginLeft: 8 }}>
+                            Data de abertura: {new Date().toLocaleDateString('pt-BR')}
+                        </Text>
+                    </View>
+
+                    {/* Submit Button */}
+                    <Button onPress={handleCreate} loading={submitting} disabled={submitting}>
+                        {submitting ? 'CRIANDO...' : 'CRIAR ORDEM >>'}
+                    </Button>
+                </ScrollView >
+            </KeyboardAvoidingView>
 
             {/* Client Selection Modal */}
             < Modal visible={showClientModal} animationType="slide" transparent >

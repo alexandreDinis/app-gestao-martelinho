@@ -22,14 +22,46 @@ export const authService = {
         // Assuming api.ts has baseURL ending in /api/v1
 
         const response = await api.post<UserResponse>('/auth/login', credentials);
+        const userData = response.data;
 
-        if (response.data.token) {
-            await SecureStore.setItemAsync('user', JSON.stringify(response.data));
+        if (userData.token) {
+            // Enrich user profile from JWT payload (backend response may not include these fields)
+            try {
+                const parts = userData.token.split('.');
+                if (parts.length === 3) {
+                    let base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+                    const pad = base64.length % 4;
+                    if (pad) base64 += '='.repeat(4 - pad);
+                    const payload = JSON.parse(atob(base64));
 
-            // In a full implementation, we would fetch the user profile here similar to web.
-            // For this PoC, we will trust the login response or implement getMe later.
+                    // Extract email from JWT if not in response
+                    if (!userData.email) {
+                        userData.email = payload.email || payload.sub || credentials.email;
+                    }
+
+                    // Extract name from JWT (v_u = visible user name)
+                    if (!userData.name) {
+                        userData.name = payload.v_u || payload.name || userData.email?.split('@')[0] || undefined;
+                    }
+
+                    // Extract role from JWT
+                    if (!userData.role && !userData.roles) {
+                        userData.roles = payload.roles || (payload.role ? [payload.role] : undefined);
+                        userData.role = userData.roles?.[0];
+                    }
+
+                    console.log('🔐 [authService] Enriched user data:', JSON.stringify({
+                        email: userData.email,
+                        name: userData.name,
+                        role: userData.role,
+                    }));
+                }
+            } catch (e) {
+                console.error('[authService] JWT enrichment error:', e);
+            }
+            await SecureStore.setItemAsync('user', JSON.stringify(userData));
         }
-        return response.data;
+        return userData;
     },
 
     logout: async () => {
@@ -46,7 +78,28 @@ export const authService = {
         try {
             const userStr = await SecureStore.getItemAsync('user');
             if (userStr) {
-                return JSON.parse(userStr);
+                const user = JSON.parse(userStr) as UserResponse;
+                // Enrich profile retroactively for existing sessions
+                if ((!user.name || !user.email) && user.token) {
+                    try {
+                        const parts = user.token.split('.');
+                        if (parts.length === 3) {
+                            let base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+                            const pad = base64.length % 4;
+                            if (pad) base64 += '='.repeat(4 - pad);
+                            const payload = JSON.parse(atob(base64));
+                            if (!user.email) user.email = payload.email || payload.sub || '';
+                            if (!user.name) user.name = payload.v_u || payload.name || user.email?.split('@')[0] || undefined;
+                            if (!user.role && !user.roles) {
+                                user.roles = payload.roles || undefined;
+                                user.role = user.roles?.[0];
+                            }
+                            // Persist enriched data
+                            await SecureStore.setItemAsync('user', JSON.stringify(user));
+                        }
+                    } catch (e) { /* ignore */ }
+                }
+                return user;
             }
         } catch (e) {
             console.error("Failed to get current user", e);
