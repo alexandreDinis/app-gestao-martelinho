@@ -35,6 +35,7 @@ export interface UserResponse {
 
 export interface User {
     id: number;
+    server_id?: number;
     email: string;
     name?: string;
     role?: string;
@@ -73,6 +74,11 @@ export interface Cliente {
     cidade?: string;
     estado?: string;
     cep?: string;
+    empresaId?: number;
+    correlationId?: string | null;
+    // Sync & Soft Delete
+    deletedAt?: string | null;
+    updatedAt?: string | null;
 }
 
 export interface ClienteRequest {
@@ -104,9 +110,12 @@ export interface ClienteFiltros {
 export interface PecaOS {
     id: number;
     localId?: string;
+    tipoPecaId?: number;
+    tipoPeca?: { id: number; nome: string };
     nomePeca: string;
     valorCobrado: number;
     descricao?: string;
+    deletedAt?: string | null;
 }
 
 export interface VeiculoOS {
@@ -117,6 +126,7 @@ export interface VeiculoOS {
     cor: string;
     valorTotal: number;
     pecas: PecaOS[];
+    deletedAt?: string | null;
 }
 
 export interface OrdemServico {
@@ -137,10 +147,13 @@ export interface OrdemServico {
     usuarioEmail?: string;
     empresaId: number;
     localId?: string;
+    updatedAt?: string; // Replay protection
+    deletedAt?: string | null;
 }
 
 export interface CreateOSRequest {
-    clienteId: number;
+    clienteId?: number; // Optional, clienteLocalId is preferred
+    clienteLocalId: string; // Mandatory for strict linkage
     data: string;
     dataVencimento?: string;
     usuarioId?: number;
@@ -152,6 +165,7 @@ export interface UpdateOSStatusRequest {
 
 export interface AddVeiculoRequest {
     ordemServicoId: number;
+    osLocalId?: string; // UUID of parent OS
     placa: string;
     modelo: string;
     cor: string;
@@ -159,6 +173,7 @@ export interface AddVeiculoRequest {
 
 export interface AddPecaRequest {
     veiculoId: number;
+    veiculoLocalId?: string; // UUID of parent Vehicle
     tipoPecaId: number;
     valorCobrado?: number;
     descricao?: string;

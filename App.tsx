@@ -15,8 +15,9 @@ import { CreateOSScreen } from './src/screens/CreateOSScreen';
 import { ClientFormScreen } from './src/screens/ClientFormScreen';
 import { RootStackParamList } from './src/navigation/types';
 import { theme } from './src/theme';
-import { NetworkStatusIndicator } from './src/components/NetworkStatusIndicator';
 import { Logger } from './src/services/Logger';
+
+console.log("🚀 APP STARTING - LOG TEST 🚀");
 
 const Stack = createStackNavigator<RootStackParamList>();
 
@@ -83,7 +84,6 @@ export default function App() {
       >
         <AuthProvider>
           <StatusBar style="light" backgroundColor={theme.colors.background} />
-          <NetworkStatusIndicator />
           <AppRoutes />
         </AuthProvider>
       </NavigationContainer>

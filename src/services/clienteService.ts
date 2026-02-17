@@ -13,15 +13,29 @@ const Logger = {
 
 export const clienteService = {
     getAll: async (since?: string): Promise<Cliente[]> => {
-        const response = await api.get<Cliente[]>('/clientes', {
-            params: { since }
-        });
-        return response.data;
+        try {
+            const response = await api.get<Cliente[]>('/clientes', {
+                params: { since }
+            });
+            return response.data;
+        } catch (error) {
+            Logger.error('[ClienteService] getAll failed, falling back to local', error);
+            // Fallback: carregar do banco local
+            const localClientes = await ClienteModel.getAll();
+            return localClientes.map(c => ClienteModel.toApiFormat(c));
+        }
     },
 
     getById: async (id: number): Promise<Cliente> => {
-        const response = await api.get<Cliente>(`/clientes/${id}`);
-        return response.data;
+        try {
+            const response = await api.get<Cliente>(`/clientes/${id}`);
+            return response.data;
+        } catch (error) {
+            Logger.error(`[ClienteService] getById(${id}) failed, falling back to local`, error);
+            const local = await ClienteModel.getByServerId(id);
+            if (local) return ClienteModel.toApiFormat(local);
+            throw error;
+        }
     },
 
     /**
@@ -70,6 +84,11 @@ export const clienteService = {
             queuedForSync: true
         });
 
+        // 🔧 Trigger immediate sync attempt if not in forced offline mode
+        if (!OfflineDebug.isForceOffline()) {
+            import('./SyncService').then(m => m.SyncService.processQueue('Cliente.create_fallback').catch(e => console.error(e)));
+        }
+
         // Converter para formato da API para retornar
         return ClienteModel.toApiFormat(localCliente);
     },
@@ -83,53 +102,61 @@ export const clienteService = {
             endereco: data.endereco || data.logradouro || '' // Fallback para logradouro
         };
 
-        // 🔧 OFFLINE FIRST: Se estiver offline, salvar localmente
-        // 🔧 OFFLINE FIRST: Se estiver offline, salvar localmente
-        if (OfflineDebug.isForceOffline()) {
-            Logger.info('[ClienteService] Offline mode - saving locally');
+        const { isConnected, isInternetReachable } = await OfflineDebug.checkConnectivity();
+        const isOnline = isConnected && isInternetReachable && !OfflineDebug.isForceOffline();
 
-            const localCliente = await ClienteModel.getByServerId(id);
-            if (!localCliente) {
-                throw new Error('Cliente não encontrado no banco local');
+        if (isOnline) {
+            // Tentar update na API primeiro
+            try {
+                Logger.info('[ClienteService] Attempting API update (online mode)');
+                const response = await api.put<Cliente>(`/clientes/${id}`, payload);
+                Logger.info('[ClienteService] Cliente updated successfully via API', { id });
+
+                // Atualizar no cache local como SYNCED
+                const localCliente = await ClienteModel.getByServerId(id);
+                if (localCliente) {
+                    await ClienteModel.upsertFromServer(response.data);
+                }
+
+                return response.data;
+            } catch (error) {
+                Logger.error('[ClienteService] API update failed, falling back to offline mode', error);
+                // Continua para modo offline
             }
-
-            // Atualizar dados locais usando o Model (que gerencia o status PENDING_UPDATE)
-            // Aqui passamos o ID local (Primary Key), não o server_id
-            await ClienteModel.update(localCliente.id, {
-                ...payload,
-                // Garantir que campos obrigatórios não sejam perdidos se não vierem no payload
-                razaoSocial: payload.razaoSocial || localCliente.razao_social,
-                nomeFantasia: payload.nomeFantasia || localCliente.nome_fantasia || undefined,
-                contato: payload.contato || localCliente.contato || '',
-                email: payload.email || localCliente.email || '',
-                status: (payload.status || localCliente.status) as 'ATIVO' | 'INATIVO',
-                // Address ...
-                logradouro: payload.logradouro || localCliente.logradouro || '',
-                numero: payload.numero || localCliente.numero || '',
-                bairro: payload.bairro || localCliente.bairro || '',
-                cidade: payload.cidade || localCliente.cidade || '',
-                estado: payload.estado || localCliente.estado || '',
-                cep: payload.cep || localCliente.cep || ''
-            });
-
-            Logger.info('[ClienteService] Cliente updated locally via Model.update');
-
-            // Retornar o objeto atualizado (buscando do banco para garantir)
-            const updated = await ClienteModel.getById(localCliente.id);
-            return ClienteModel.toApiFormat(updated!);
         }
 
-        // Online: fazer update normal na API
-        const response = await api.put<Cliente>(`/clientes/${id}`, payload);
-        Logger.info('[ClienteService] Cliente updated successfully', { id });
+        // Modo offline: salvar localmente via Model (que gerencia o status PENDING_UPDATE e fila)
+        Logger.info('[ClienteService] Updating cliente in offline mode');
 
-        // Atualizar no cache local também, se existir
         const localCliente = await ClienteModel.getByServerId(id);
-        if (localCliente) {
-            await ClienteModel.upsertFromServer(response.data);
+        if (!localCliente) {
+            throw new Error('Cliente não encontrado no banco local para atualização');
         }
 
-        return response.data;
+        const updated = await ClienteModel.update(localCliente.id, {
+            ...payload,
+            // Garantir que campos obrigatórios não sejam perdidos
+            razaoSocial: payload.razaoSocial || localCliente.razao_social,
+            nomeFantasia: payload.nomeFantasia || localCliente.nome_fantasia || undefined,
+            contato: payload.contato || localCliente.contato || '',
+            email: payload.email || localCliente.email || '',
+            status: (payload.status || localCliente.status) as 'ATIVO' | 'INATIVO',
+            logradouro: payload.logradouro || localCliente.logradouro || '',
+            numero: payload.numero || localCliente.numero || '',
+            bairro: payload.bairro || localCliente.bairro || '',
+            cidade: payload.cidade || localCliente.cidade || '',
+            estado: payload.estado || localCliente.estado || '',
+            cep: payload.cep || localCliente.cep || ''
+        });
+
+        Logger.info('[ClienteService] Cliente updated locally', { localId: localCliente.local_id });
+
+        // 🔧 Trigger immediate sync attempt if not in forced offline mode
+        if (!OfflineDebug.isForceOffline()) {
+            import('./SyncService').then(m => m.SyncService.processQueue('Cliente.update_fallback').catch(e => console.error(e)));
+        }
+
+        return ClienteModel.toApiFormat(updated!);
     },
 
     search: async (filtros: ClienteFiltros): Promise<Cliente[]> => {

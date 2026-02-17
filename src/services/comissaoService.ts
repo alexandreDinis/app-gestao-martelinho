@@ -9,12 +9,12 @@ export interface IComissaoService {
 
 export const comissaoService: IComissaoService = {
     async obterComissaoMensal(ano: number, mes: number): Promise<ComissaoCalculada> {
-        const response = await api.get<ComissaoCalculada>(`comissao/${ano}/${mes}`);
+        const response = await api.get<ComissaoCalculada>(`/comissao/${ano}/${mes}`);
         return response.data;
     },
 
     async forceSync(ano: number, mes: number): Promise<ComissaoCalculada> {
-        const response = await api.post<ComissaoCalculada>(`comissao/${ano}/${mes}/sync`);
+        const response = await api.post<ComissaoCalculada>(`/comissao/${ano}/${mes}/sync`);
         return response.data;
     },
 

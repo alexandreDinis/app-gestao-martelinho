@@ -11,10 +11,39 @@ export const ClienteModel = {
     /**
      * Buscar todos os clientes locais
      */
-    async getAll(): Promise<LocalCliente[]> {
+    async getAll(empresaId?: number): Promise<LocalCliente[]> {
+        if (empresaId !== undefined && empresaId !== 0) {
+            return await databaseService.runQuery<LocalCliente>(
+                `SELECT * FROM clientes
+                 WHERE empresa_id = ?
+                   AND deleted_at IS NULL
+                   AND sync_status != 'PENDING_DELETE'
+                 ORDER BY razao_social`,
+                [empresaId]
+            );
+        }
         return await databaseService.runQuery<LocalCliente>(
-            `SELECT * FROM clientes WHERE sync_status != 'PENDING_DELETE' ORDER BY razao_social`
+            `SELECT * FROM clientes
+             WHERE deleted_at IS NULL
+               AND sync_status != 'PENDING_DELETE'
+             ORDER BY razao_social`
         );
+    },
+
+    /**
+     * Obter contagem total de Clientes
+     */
+    async getCount(): Promise<number> {
+        const result = await databaseService.getFirst<{ count: number }>(`SELECT COUNT(*) as count FROM clientes`);
+        return result?.count || 0;
+    },
+
+    async getCountByEmpresa(empresaId: number): Promise<number> {
+        const result = await databaseService.getFirst<{ count: number }>(
+            `SELECT COUNT(*) as count FROM clientes WHERE empresa_id = ?`,
+            [empresaId]
+        );
+        return result?.count || 0;
     },
 
     /**
@@ -22,7 +51,7 @@ export const ClienteModel = {
      */
     async getById(id: number): Promise<LocalCliente | null> {
         return await databaseService.getFirst<LocalCliente>(
-            `SELECT * FROM clientes WHERE id = ?`,
+            `SELECT * FROM clientes WHERE id = ? AND deleted_at IS NULL`,
             [id]
         );
     },
@@ -30,9 +59,15 @@ export const ClienteModel = {
     /**
      * Buscar cliente por server_id
      */
-    async getByServerId(serverId: number): Promise<LocalCliente | null> {
+    async getByServerId(serverId: number, empresaId?: number): Promise<LocalCliente | null> {
+        if (empresaId !== undefined && empresaId !== 0) {
+            return await databaseService.getFirst<LocalCliente>(
+                `SELECT * FROM clientes WHERE empresa_id = ? AND server_id = ? AND deleted_at IS NULL LIMIT 1`,
+                [empresaId, serverId]
+            );
+        }
         return await databaseService.getFirst<LocalCliente>(
-            `SELECT * FROM clientes WHERE server_id = ?`,
+            `SELECT * FROM clientes WHERE server_id = ? AND deleted_at IS NULL`,
             [serverId]
         );
     },
@@ -40,9 +75,15 @@ export const ClienteModel = {
     /**
      * Buscar cliente por local_id (UUID)
      */
-    async getByLocalId(localId: string): Promise<LocalCliente | null> {
+    async getByLocalId(localId: string, empresaId?: number): Promise<LocalCliente | null> {
+        if (empresaId !== undefined && empresaId !== 0) {
+            return await databaseService.getFirst<LocalCliente>(
+                `SELECT * FROM clientes WHERE empresa_id = ? AND local_id = ? AND deleted_at IS NULL LIMIT 1`,
+                [empresaId, localId]
+            );
+        }
         return await databaseService.getFirst<LocalCliente>(
-            `SELECT * FROM clientes WHERE local_id = ?`,
+            `SELECT * FROM clientes WHERE local_id = ? AND deleted_at IS NULL`,
             [localId]
         );
     },
@@ -52,14 +93,27 @@ export const ClienteModel = {
     /**
      * Buscar clientes por termo de busca (nome, fantasia, cnpj, cpf)
      */
-    async search(termo: string): Promise<LocalCliente[]> {
+    async search(termo: string, empresaId?: number): Promise<LocalCliente[]> {
         const searchTerm = `%${termo}%`;
+        if (empresaId !== undefined && empresaId !== 0) {
+            return await databaseService.runQuery<LocalCliente>(
+                `SELECT DISTINCT * FROM clientes
+                 WHERE empresa_id = ?
+                   AND deleted_at IS NULL
+                   AND sync_status != 'PENDING_DELETE'
+                   AND (razao_social LIKE ? OR nome_fantasia LIKE ? OR cnpj LIKE ? OR cpf LIKE ?)
+                 ORDER BY razao_social
+                 LIMIT 50`,
+                [empresaId, searchTerm, searchTerm, searchTerm, searchTerm]
+            );
+        }
         return await databaseService.runQuery<LocalCliente>(
-            `SELECT * FROM clientes 
-       WHERE sync_status != 'PENDING_DELETE'
-       AND (razao_social LIKE ? OR nome_fantasia LIKE ? OR cnpj LIKE ? OR cpf LIKE ?)
-       ORDER BY razao_social
-       LIMIT 50`,
+            `SELECT DISTINCT * FROM clientes
+             WHERE deleted_at IS NULL
+               AND sync_status != 'PENDING_DELETE'
+               AND (razao_social LIKE ? OR nome_fantasia LIKE ? OR cnpj LIKE ? OR cpf LIKE ?)
+             ORDER BY razao_social
+             LIMIT 50`,
             [searchTerm, searchTerm, searchTerm, searchTerm]
         );
     },
@@ -67,26 +121,28 @@ export const ClienteModel = {
     /**
      * Criar cliente local (para uso offline)
      */
-    async create(data: ClienteRequest, syncStatus: SyncStatus = 'PENDING_CREATE'): Promise<LocalCliente> {
+    async create(data: ClienteRequest & { empresaId?: number }, syncStatus: SyncStatus = 'PENDING_CREATE'): Promise<LocalCliente> {
         const now = Date.now();
         const localId = uuidv4();
-        const uuid = localId; // Usando localId como UUID por enquanto ou gerando outro se necessário. O prompt pediu "Adicione colunas... uuid". Vamos usar o mesmo valor de local_id por consistência inicial.
+        const uuid = localId; // Usando localId como UUID por enquanto
+        const correlationId = localId; // Definitive: correlation_id = local_id
 
         const id = await databaseService.runInsert(
             `INSERT INTO clientes (
-        local_id, uuid, server_id, version, razao_social, nome_fantasia, cnpj, cpf,
+        local_id, uuid, correlation_id, server_id, version, razao_social, nome_fantasia, cnpj, cpf,
         tipo_pessoa, contato, email, status, logradouro, numero, complemento,
-        bairro, cidade, estado, cep, sync_status, updated_at, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        bairro, cidade, estado, cep, sync_status, updated_at, created_at, empresa_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
                 localId,
                 uuid,
+                correlationId,
                 null, // server_id
                 1, // version
                 data.razaoSocial,
                 data.nomeFantasia || null,
-                data.cnpj || null,
-                data.cpf || null,
+                this.normalizeCnpjCpf(data.cnpj), // Salvar NORMALIZADO
+                this.normalizeCnpjCpf(data.cpf),  // Salvar NORMALIZADO
                 data.tipoPessoa || null,
                 data.contato,
                 data.email,
@@ -100,7 +156,8 @@ export const ClienteModel = {
                 data.cep || null,
                 syncStatus,
                 now,
-                now
+                now,
+                data.empresaId || 0
             ]
         );
 
@@ -116,7 +173,7 @@ export const ClienteModel = {
      * Salvar múltiplos clientes do servidor no cache local (Batch)
      */
     async upsertBatch(clientes: Cliente[]): Promise<void> {
-        const db = databaseService.getDatabase();
+        const db = await databaseService.getDatabase();
 
         // 🚀 PERFORMANCE: Chunked processing to prevent locks during large syncs
         const CHUNK_SIZE = 20; // Clientes são mais leves que OS, podemos usar batch maior
@@ -137,126 +194,215 @@ export const ClienteModel = {
             }
         }
     },
+
+    // ── Helpers (PR3) ──────────────────────────────────────────────
+
     /**
-         * Salvar cliente do servidor no cache local
-         */
-    async upsertFromServer(cliente: Cliente): Promise<LocalCliente> {
-        const now = Date.now();
-        // console.log(`[ClienteModel] upsertFromServer: Buscando cliente server_id=${cliente.id} ou localId=${cliente.localId}`);
+     * Non-destructive merge: prefere incoming se não for null/undefined.
+     */
+    pickBest<T>(incoming: T | null | undefined, existing: T | null | undefined): T | null | undefined {
+        if (incoming === null || incoming === undefined) return existing;
+        return incoming;
+    },
 
-        // 1. Tentar buscar por server_id
-        let existing = await this.getByServerId(cliente.id);
-
-        // 2. Fallback: Tentar buscar pelo localId (identidade offline) se fornecido
-        if (!existing && cliente.localId) {
-            existing = await this.getByLocalId(cliente.localId);
-            if (existing) {
-                // console.log(`[ClienteModel] Cliente encontrado via localId: ${cliente.localId} (sem server_id vinculado ainda)`);
-            }
+    /** ISO string → millis (ou null se inválido). Normaliza LocalDateTime (sem TZ) → UTC. */
+    toMillis(iso?: string | null): number | null {
+        if (!iso) return null;
+        let normalized = iso;
+        if (!/[Z+\-]\d{0,2}:?\d{0,2}$/.test(iso)) {
+            normalized = iso + 'Z';
         }
+        const ms = Date.parse(normalized);
+        return Number.isNaN(ms) ? null : ms;
+    },
 
-        if (existing) {
-            console.log(`[ClienteModel] Encontrado local: id=${existing.id}, sync_status=${existing.sync_status}, nome=${existing.razao_social}`);
+    /** Detecta se o servidor marcou este cliente como deletado */
+    isDeletedFromServer(cliente: Cliente): boolean {
+        return !!cliente.deletedAt;
+    },
 
-            // 🛡️ SEGURANÇA: Não sobrescrever se houver alterações locais pendentes
-            if (existing.sync_status !== 'SYNCED') {
-                // Zombie Check: Se status é PENDING mas não está na fila, é um estado inconsistente e devemos aceitar o server
-                const isReallyPending = await SyncQueueModel.hasPending('cliente', existing.local_id);
+    /**
+     * Remove caracteres não numéricos de CNPJ/CPF
+     */
+    normalizeCnpjCpf(value?: string | null): string | null {
+        if (!value) return null;
+        const nums = value.replace(/\D/g, '');
+        return nums.length > 0 ? nums : null;
+    },
 
-                if (isReallyPending) {
-                    console.log(`[ClienteModel] 🛡️ Ignorando update do servidor para cliente ${existing.id} (status: ${existing.sync_status}, queue: YES)`);
-                    return existing;
-                } else {
-                    console.log(`[ClienteModel] 🧟 Zombie detected! Status ${existing.sync_status} but not in Queue (or Dead). Overwriting with Server data.`);
+    /**
+     * Salvar cliente do servidor no cache local.
+     * Lógica DEFINITIVA de prevenção de duplicatas:
+     * 1. Busca por server_id (strict number)
+     * 2. Busca por Correlation ID (local_id/uuid) - "Anonymous Match"
+     * 3. Busca por CNPJ/CPF normalizado (se válido: 11 ou 14 dígitos)
+     * 4. Update se encontrar, Insert se não.
+     */
+    async upsertFromServer(data: Cliente): Promise<LocalCliente> {
+        try {
+            // Strict number conversion for serverId
+            const serverId = typeof data.id === 'string' ? parseInt(data.id, 10) : data.id;
+
+            // 1️⃣ Tentativa 1: Match por server_id (Strict)
+            let existing = await databaseService.getFirst<LocalCliente>(
+                `SELECT * FROM clientes WHERE server_id = ? LIMIT 1`,
+                [serverId]
+            );
+
+            if (existing) {
+                console.log(`[ClienteModel] ✅ MATCH por server_id: ${serverId} -> UPDATE local_id: ${existing.local_id}`);
+            }
+
+            // 2️⃣ Tentativa 2: Match por Correlation ID (local_id via uuid column)
+            if (!existing) {
+                // O backend pode retornar 'correlationId' ou 'localId' no payload
+                const correlationId = (data as any).correlationId || (data as any).localId;
+                if (correlationId) {
+                    existing = await databaseService.getFirst<LocalCliente>(
+                        `SELECT * FROM clientes WHERE correlation_id = ? LIMIT 1`,
+                        [correlationId]
+                    );
+                    // Fallback para local_id se migration V9 recém rodou e não houve tempo de update (incomum, mas seguro)
+                    if (!existing) {
+                        existing = await databaseService.getFirst<LocalCliente>(
+                            `SELECT * FROM clientes WHERE local_id = ? AND server_id IS NULL LIMIT 1`,
+                            [correlationId]
+                        );
+                    }
+
+                    if (existing) {
+                        console.log(`[ClienteModel] 🎯 Match encontrado por Correlation ID! LocalID=${existing.local_id} <-> ServerID=${serverId}`);
+                    }
                 }
             }
 
-            // console.log(`[ClienteModel] Sobrescrevendo cliente ${existing.id} com dados do servidor`);
+            // 3️⃣ Tentativa 3: Match por CNPJ/CPF (Documento Único) - Fallback
+            if (!existing) {
+                const doc = data.cnpj || data.cpf;
+                const normalizedDoc = this.normalizeCnpjCpf(doc);
 
-            // 🛡️ INTELLIGENT MERGE: Não apagar dados locais (como endereço) se o server mandar null (comum em sync de OS)
-            const razaoSocial = cliente.razaoSocial || existing.razao_social;
-            const nomeFantasia = cliente.nomeFantasia || existing.nome_fantasia;
-            const cnpj = cliente.cnpj || existing.cnpj;
-            const cpf = cliente.cpf || existing.cpf;
-            const logradouro = cliente.logradouro || existing.logradouro;
-            const numero = cliente.numero || existing.numero;
-            const complemento = cliente.complemento || existing.complemento;
-            const bairro = cliente.bairro || existing.bairro;
-            const cidade = cliente.cidade || existing.cidade;
-            const estado = cliente.estado || existing.estado;
-            const cep = cliente.cep || existing.cep;
+                if (normalizedDoc && (normalizedDoc.length === 11 || normalizedDoc.length === 14)) {
+                    if (normalizedDoc.length === 14) {
+                        existing = await databaseService.getFirst<LocalCliente>(
+                            `SELECT * FROM clientes WHERE cnpj = ? AND server_id IS NULL LIMIT 1`,
+                            [normalizedDoc]
+                        );
+                    } else {
+                        existing = await databaseService.getFirst<LocalCliente>(
+                            `SELECT * FROM clientes WHERE cpf = ? AND server_id IS NULL LIMIT 1`,
+                            [normalizedDoc]
+                        );
+                    }
 
-            // Atualizar existente
-            await databaseService.runUpdate(
-                `UPDATE clientes SET
-          server_id = ?, 
-          razao_social = ?, nome_fantasia = ?, cnpj = ?, cpf = ?,
-          tipo_pessoa = ?, contato = ?, email = ?, status = ?,
-          logradouro = ?, numero = ?, complemento = ?, bairro = ?,
-          cidade = ?, estado = ?, cep = ?,
-          sync_status = 'SYNCED', last_synced_at = ?, updated_at = ?
-         WHERE id = ?`,
-                [
-                    cliente.id,
-                    razaoSocial,
-                    nomeFantasia,
-                    cnpj,
-                    cpf,
-                    cliente.tipoPessoa || existing.tipo_pessoa,
-                    cliente.contato || existing.contato,
-                    cliente.email || existing.email,
-                    cliente.status || existing.status,
-                    logradouro,
-                    numero,
-                    complemento,
-                    bairro,
-                    cidade,
-                    estado,
-                    cep,
-                    now,
-                    now,
-                    existing.id
-                ]
-            );
-            return (await this.getById(existing.id))!;
-        } else {
-            // Inserir novo
-            const localId = cliente.localId || uuidv4(); // Usar o localId vindo do server se existir, senão novo
-            const uuid = localId;
+                    if (existing) {
+                        console.log(`[ClienteModel] 🎯 Match encontrado por Documento! LocalID=${existing.local_id} <-> ServerID=${serverId}`);
+                    }
+                }
+            }
 
-            const id = await databaseService.runInsert(
-                `INSERT INTO clientes (
-          local_id, uuid, server_id, version, razao_social, nome_fantasia, cnpj, cpf,
-          tipo_pessoa, contato, email, status, logradouro, numero, complemento,
-          bairro, cidade, estado, cep, sync_status, last_synced_at, updated_at, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                [
-                    localId,
-                    uuid,
-                    cliente.id,
-                    1,
-                    cliente.razaoSocial,
-                    cliente.nomeFantasia || null,
-                    cliente.cnpj || null,
-                    cliente.cpf || null,
-                    cliente.tipoPessoa || null,
-                    cliente.contato,
-                    cliente.email,
-                    cliente.status,
-                    cliente.logradouro || null,
-                    cliente.numero || null,
-                    cliente.complemento || null,
-                    cliente.bairro || null,
-                    cliente.cidade || null,
-                    cliente.estado || null,
-                    cliente.cep || null,
-                    'SYNCED', // sync_status
-                    now,
-                    now,
-                    now
-                ]
-            );
-            return (await this.getById(id))!;
+            const now = Date.now();
+            const normalizedCnpj = this.normalizeCnpjCpf(data.cnpj);
+            const normalizedCpf = this.normalizeCnpjCpf(data.cpf);
+
+            if (existing) {
+                // UPDATE
+                await databaseService.runUpdate(
+                    `UPDATE clientes SET
+                       server_id = ?,
+                       server_updated_at = ?,
+                       deleted_at = NULL,
+                       razao_social = ?, nome_fantasia = ?, cnpj = ?, cpf = ?,
+                       tipo_pessoa = ?, contato = ?, email = ?, status = ?,
+                       logradouro = ?, numero = ?, complemento = ?, bairro = ?,
+                       cidade = ?, estado = ?, cep = ?,
+                       sync_status = 'SYNCED',
+                       last_synced_at = ?
+                       WHERE id = ?`,
+                    [
+                        serverId,
+                        new Date().toISOString(),
+                        data.razaoSocial,
+                        data.nomeFantasia || null,
+                        normalizedCnpj,
+                        normalizedCpf,
+                        data.tipoPessoa || 'JURIDICA',
+                        data.contato,
+                        data.email,
+                        data.status,
+                        data.logradouro,
+                        data.numero,
+                        data.complemento,
+                        data.bairro,
+                        data.cidade,
+                        data.estado,
+                        data.cep,
+                        now,
+                        existing.id
+                    ]
+                );
+                // Garantir atualizar o correlation_id se veio do server e não tínhamos ou estava defasado?
+                // Se o match foi por server_id, o correlation pode estar faltando no local
+                if (!existing.correlation_id && (data as any).correlationId) {
+                    await databaseService.runUpdate(
+                        `UPDATE clientes SET correlation_id = ? WHERE id = ?`,
+                        [(data as any).correlationId, existing.id]
+                    );
+                }
+
+                return (await this.getById(existing.id))!;
+            } else {
+                // INSERT
+                const localId = uuidv4();
+                const correlationId = (data as any).correlationId || localId;
+
+                console.log(`[ClienteModel] 🆕 INSERT novo cliente server_id: ${serverId} / local_id: ${localId}`);
+
+                await databaseService.runInsert(
+                    `INSERT INTO clientes (
+                        local_id, uuid, correlation_id, server_id, version, razao_social, nome_fantasia, cnpj, cpf,
+                        tipo_pessoa, contato, email, status, logradouro, numero, complemento,
+                        bairro, cidade, estado, cep, sync_status, last_synced_at, created_at, empresa_id,
+                        server_updated_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                    [
+                        localId,
+                        localId, // uuid legacy
+                        correlationId,
+                        serverId,
+                        1,
+                        data.razaoSocial,
+                        data.nomeFantasia || null,
+                        normalizedCnpj,
+                        normalizedCpf,
+                        data.tipoPessoa || 'JURIDICA',
+                        data.contato,
+                        data.email,
+                        data.status,
+                        data.logradouro,
+                        data.numero,
+                        data.complemento,
+                        data.bairro,
+                        data.cidade,
+                        data.estado,
+                        data.cep,
+                        'SYNCED',
+                        now,
+                        now,
+                        data.empresaId || 0,
+                        new Date().toISOString()
+                    ]
+                );
+
+                const created = await databaseService.getFirst<LocalCliente>(
+                    `SELECT * FROM clientes WHERE server_id = ? LIMIT 1`,
+                    [serverId]
+                );
+                if (!created) throw new Error('Falha ao buscar cliente recém criado via server_id');
+                return created;
+            }
+        } catch (error) {
+            console.error('[ClienteModel] ❌ Erro no upsertFromServer:', error);
+            throw error;
         }
     },
 
@@ -295,8 +441,8 @@ export const ClienteModel = {
             [
                 data.razaoSocial,
                 data.nomeFantasia,
-                data.cnpj,
-                data.cpf,
+                data.cnpj ? this.normalizeCnpjCpf(data.cnpj) : data.cnpj, // Normalizar update se vier
+                data.cpf ? this.normalizeCnpjCpf(data.cpf) : data.cpf,    // Normalizar update se vier
                 data.tipoPessoa,
                 data.contato,
                 data.email,
@@ -321,8 +467,6 @@ export const ClienteModel = {
         const fullPayload = this.toApiFormat(updatedLocal);
 
         // 3. Atualizar/Inserir na Fila de Sync
-        // Se já estava PENDING_CREATE, manter como CREATE mas com dados novos
-        // Se estava SYNCED ou PENDING_UPDATE, tratar como UPDATE com dados completos
         const action = existing.sync_status === 'PENDING_CREATE' ? 'CREATE' : 'UPDATE';
 
         await this.addToSyncQueue(existing.local_id, action, fullPayload);
@@ -349,7 +493,7 @@ export const ClienteModel = {
             await databaseService.runDelete(`DELETE FROM clientes WHERE id = ?`, [id]);
             // Remover da fila de sync
             await databaseService.runDelete(
-                `DELETE FROM sync_queue WHERE entity_type = 'cliente' AND entity_local_id = ?`,
+                `DELETE FROM sync_queue WHERE resource = 'cliente' AND temp_id = ?`,
                 [existing.local_id]
             );
         }
@@ -371,10 +515,10 @@ export const ClienteModel = {
      */
     async markAsSynced(localId: string, serverId: number): Promise<void> {
         await databaseService.runUpdate(
-            `UPDATE clientes SET 
-        server_id = ?, 
-        sync_status = 'SYNCED', 
-        last_synced_at = ? 
+            `UPDATE clientes SET
+        server_id = ?,
+        sync_status = 'SYNCED',
+        last_synced_at = ?
        WHERE local_id = ?`,
             [serverId, Date.now(), localId]
         );
@@ -383,6 +527,20 @@ export const ClienteModel = {
         await databaseService.runDelete(
             `DELETE FROM sync_queue WHERE resource = 'cliente' AND temp_id = ?`,
             [localId]
+        );
+    },
+
+    /**
+     * Anexar Server ID a um cliente local (usado no Self-Healing e Create)
+     */
+    async attachServerId(localId: string, serverId: number): Promise<void> {
+        await databaseService.runUpdate(
+            `UPDATE clientes SET
+                server_id = ?,
+                sync_status = 'SYNCED',
+                last_synced_at = ?
+            WHERE local_id = ?`,
+            [serverId, Date.now(), localId]
         );
     },
 
@@ -435,6 +593,8 @@ export const ClienteModel = {
     toApiFormat(local: LocalCliente): Cliente {
         return {
             id: local.server_id || local.id,
+            localId: local.local_id, // Ensure localId is mapped for React Keys
+            correlationId: local.correlation_id || local.local_id, // Definitive: correlation_id
             razaoSocial: local.razao_social,
             nomeFantasia: local.nome_fantasia || '',
             cnpj: local.cnpj || undefined,

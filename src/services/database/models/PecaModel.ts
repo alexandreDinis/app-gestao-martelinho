@@ -13,7 +13,7 @@ export const PecaModel = {
      */
     async getById(id: number): Promise<LocalPeca | null> {
         return await databaseService.getFirst<LocalPeca>(
-            `SELECT * FROM pecas_os WHERE id = ?`,
+            `SELECT * FROM pecas_os WHERE id = ? AND deleted_at IS NULL`,
             [id]
         );
     },
@@ -23,7 +23,7 @@ export const PecaModel = {
      */
     async getByLocalId(localId: string): Promise<LocalPeca | null> {
         return await databaseService.getFirst<LocalPeca>(
-            `SELECT * FROM pecas_os WHERE local_id = ?`,
+            `SELECT * FROM pecas_os WHERE local_id = ? AND deleted_at IS NULL`,
             [localId]
         );
     },
@@ -33,7 +33,7 @@ export const PecaModel = {
      */
     async getByServerId(serverId: number): Promise<LocalPeca | null> {
         return await databaseService.getFirst<LocalPeca>(
-            `SELECT * FROM pecas_os WHERE server_id = ?`,
+            `SELECT * FROM pecas_os WHERE server_id = ? AND deleted_at IS NULL`,
             [serverId]
         );
     },
@@ -43,7 +43,7 @@ export const PecaModel = {
      */
     async getByVeiculoId(veiculoId: number): Promise<LocalPeca[]> {
         return await databaseService.runQuery<LocalPeca>(
-            `SELECT * FROM pecas_os WHERE veiculo_id = ? AND sync_status != 'PENDING_DELETE'`,
+            `SELECT * FROM pecas_os WHERE veiculo_id = ? AND deleted_at IS NULL AND sync_status != 'PENDING_DELETE'`,
             [veiculoId]
         );
     },
@@ -63,26 +63,44 @@ export const PecaModel = {
         let veiculoId: number | null = null;
         let veiculoLocalId: string | null = data.veiculoLocalId || null;
 
-        if (data.veiculoId) {
-            const veiculo = await VeiculoModel.getByServerId(data.veiculoId);
-            if (veiculo) {
-                veiculoId = veiculo.id;
-                veiculoLocalId = veiculo.local_id;
-                console.log('[PecaModel] Resolved veiculo from server_id:', veiculo.id);
-            }
-        }
-
-        // Se não achou por server_id (ou não foi passado), tentar pelo local_id (UUID)
-        if (!veiculoId && veiculoLocalId) {
+        // 1. Prioridade absoluta: Buscar por local_id (UUID)
+        if (veiculoLocalId) {
             const veiculo = await databaseService.getFirst<LocalVeiculo>(
                 `SELECT * FROM veiculos_os WHERE local_id = ?`,
                 [veiculoLocalId]
             );
             if (veiculo) {
                 veiculoId = veiculo.id;
-                console.log('[PecaModel] Resolved veiculo from local_id (UUID):', veiculo.id);
+                veiculoLocalId = veiculo.local_id;
+                console.log(`[PecaModel] 🔗 Vinculado via veiculoLocalId ${veiculoLocalId} -> PK ${veiculoId}`);
             }
         }
+
+        // 2. Fallback: Se não achou por local_id, busca por server_id
+        if (!veiculoId && data.veiculoId) {
+            // Tenta primeiro como server_id
+            const veiculoByServer = await databaseService.getFirst<LocalVeiculo>(
+                `SELECT * FROM veiculos_os WHERE server_id = ?`,
+                [data.veiculoId]
+            );
+            if (veiculoByServer) {
+                veiculoId = veiculoByServer.id;
+                veiculoLocalId = veiculoByServer.local_id;
+                console.log(`[PecaModel] 🔗 Vinculado via server_id ${data.veiculoId} -> PK ${veiculoId}`);
+            } else {
+                // Se não é server_id, pode ser PK local
+                const veiculoByPk = await databaseService.getFirst<LocalVeiculo>(
+                    `SELECT * FROM veiculos_os WHERE id = ?`,
+                    [data.veiculoId]
+                );
+                if (veiculoByPk) {
+                    veiculoId = veiculoByPk.id;
+                    veiculoLocalId = veiculoByPk.local_id;
+                    console.log(`[PecaModel] 🔗 Vinculado via PK local ${data.veiculoId} -> LocalId ${veiculoLocalId}`);
+                }
+            }
+        }
+
 
         if (!veiculoId) {
             console.warn('[PecaModel] ⚠️ Could not resolve veiculo_id for peca. It will be orphaned!');
@@ -108,8 +126,8 @@ export const PecaModel = {
             `INSERT INTO pecas_os (
         local_id, server_id, version, veiculo_id, veiculo_local_id,
         tipo_peca_id, nome_peca, valor_cobrado, descricao,
-        sync_status, updated_at, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_CREATE', ?, ?)`,
+        sync_status, updated_at, created_at, deleted_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_CREATE', ?, ?, ?)`,
             [
                 localId,
                 null, // server_id
@@ -121,11 +139,12 @@ export const PecaModel = {
                 data.valorCobrado || 0,
                 data.descricao || null,
                 now,
-                now
+                now,
+                null // deleted_at
             ]
         );
 
-        await this.addToSyncQueue(localId, 'CREATE', data);
+        await this.addToSyncQueue(localId, 'CREATE', { ...data, veiculoLocalId });
 
         return (await this.getById(id))!;
     },
@@ -155,12 +174,15 @@ export const PecaModel = {
         }
 
         if (existing) {
+            // Extrair tipo_peca_id do response da API (pode vir como tipoPecaId ou tipoPeca.id)
+            const tipoPecaId = peca.tipoPecaId || peca.tipoPeca?.id || existing.tipo_peca_id || null;
+
             await databaseService.runUpdate(
                 `UPDATE pecas_os SET
-          server_id = ?, nome_peca = ?, valor_cobrado = ?, descricao = ?,
-          sync_status = 'SYNCED', updated_at = ?
+          server_id = ?, tipo_peca_id = ?, nome_peca = ?, valor_cobrado = ?, descricao = ?,
+          sync_status = 'SYNCED', updated_at = ?, deleted_at = ?
          WHERE id = ?`,
-                [peca.id, peca.nomePeca || existing.nome_peca, peca.valorCobrado, peca.descricao, now, existing.id]
+                [peca.id, tipoPecaId, peca.nomePeca || existing.nome_peca, peca.valorCobrado, peca.descricao, now, peca.deletedAt || null, existing.id]
             );
             return (await this.getById(existing.id))!;
         } else {
@@ -172,23 +194,28 @@ export const PecaModel = {
             const veiculo = await VeiculoModel.getById(veiculoLocalId);
             const veiculoLocalUUID = veiculo?.local_id || null;
 
+            // Extrair tipo_peca_id do response da API
+            const tipoPecaId = peca.tipoPecaId || peca.tipoPeca?.id || null;
+
             const id = await databaseService.runInsert(
                 `INSERT INTO pecas_os (
           local_id, server_id, version, veiculo_id, veiculo_local_id,
-          nome_peca, valor_cobrado, descricao,
-          sync_status, updated_at, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'SYNCED', ?, ?)`,
+          tipo_peca_id, nome_peca, valor_cobrado, descricao,
+          sync_status, updated_at, created_at, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'SYNCED', ?, ?, ?)`,
                 [
                     localId,
                     peca.id,
                     1,
                     veiculoLocalId, // PK Integer
                     veiculoLocalUUID, // UUID string
+                    tipoPecaId,
                     peca.nomePeca,
                     peca.valorCobrado,
                     peca.descricao,
                     now,
-                    now
+                    now,
+                    peca.deletedAt || null
                 ]
             );
             return (await this.getById(id))!;
