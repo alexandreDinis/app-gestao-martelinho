@@ -46,6 +46,11 @@ export interface LocalCliente extends BaseLocalEntity {
     cidade: string | null;
     estado: string | null;
     cep: string | null;
+    empresa_id?: number;
+    // V7: Sync & Soft Delete
+    deleted_at?: string | null;
+    server_updated_at?: string | null;
+    correlation_id?: string | null;
 }
 
 export interface LocalOS extends BaseLocalEntity {
@@ -61,6 +66,9 @@ export interface LocalOS extends BaseLocalEntity {
     usuario_id?: number | null;
     usuario_nome?: string | null;
     usuario_email?: string | null;
+    empresa_id?: number;
+    deleted_at?: string | null;
+    server_updated_at?: string | null; // Replay protection
 }
 
 export interface LocalVeiculo extends BaseLocalEntity {
@@ -70,6 +78,7 @@ export interface LocalVeiculo extends BaseLocalEntity {
     modelo: string | null;
     cor: string | null;
     valor_total: number;
+    deleted_at?: string | null;
 }
 
 export interface LocalPeca extends BaseLocalEntity {
@@ -79,6 +88,7 @@ export interface LocalPeca extends BaseLocalEntity {
     nome_peca: string | null;
     valor_cobrado: number | null;
     descricao: string | null;
+    deleted_at?: string | null;
 }
 
 export interface LocalDespesa extends BaseLocalEntity {

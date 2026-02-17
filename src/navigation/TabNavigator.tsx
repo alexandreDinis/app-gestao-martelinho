@@ -42,19 +42,10 @@ import { useEffect } from 'react';
 export const TabNavigator = () => {
     const insets = useSafeAreaInsets();
 
-    useEffect(() => {
-        // Trigger background sync on mount
-        const triggerSync = async () => {
-            try {
-                // We assume there's a connection since the user just logged in/opened the app
-                // SyncService.syncAll has internal checks anyway
-                await SyncService.syncAll(true);
-            } catch (e) {
-                console.error('[TabNavigator] Initial sync failed', e);
-            }
-        };
-        triggerSync();
-    }, []);
+    // Automatic sync removed. SyncEngine handles boot sync logic.
+    // useEffect(() => {
+    //    ...
+    // }, []);
 
     return (
         <Tab.Navigator

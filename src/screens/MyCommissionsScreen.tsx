@@ -3,7 +3,7 @@ import { View, Text, ScrollView, RefreshControl, TouchableOpacity, ActivityIndic
 import { useFocusEffect } from '@react-navigation/native';
 import { TrendingUp, Percent, Landmark, ReceiptText, ArrowUpRight, AlertTriangle, CheckCircle, RefreshCw } from 'lucide-react-native';
 import { theme } from '../theme';
-import { Card } from '../components/ui';
+import { Card, NetworkStatusDot } from '../components/ui';
 import { comissaoService } from '../services/comissaoService';
 import { ComissaoCalculada } from '../types';
 
@@ -98,9 +98,12 @@ export const MyCommissionsScreen = () => {
                 <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
                     <View style={{ flex: 1, marginRight: 12 }}>
                         <Text style={{ color: theme.colors.textMuted, fontSize: 9, letterSpacing: 2 }}>SISTEMA_UNIFICADO_V2</Text>
-                        <Text style={{ color: theme.colors.primary, fontSize: 22, fontWeight: '900', fontStyle: 'italic', letterSpacing: 0.5 }}>
-                            Painel Unificado
-                        </Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                            <Text style={{ color: theme.colors.primary, fontSize: 22, fontWeight: '900', fontStyle: 'italic', letterSpacing: 0.5 }}>
+                                Painel Unificado
+                            </Text>
+                            <NetworkStatusDot />
+                        </View>
                     </View>
 
                     {/* Month Navigation */}
@@ -244,7 +247,7 @@ export const MyCommissionsScreen = () => {
                         </View>
 
                         {/* Saldo Anterior */}
-                        {comissao.saldoAnterior && comissao.saldoAnterior !== 0 && (
+                        {comissao.saldoAnterior != null && comissao.saldoAnterior !== 0 && (
                             <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(245, 158, 11, 0.1)', borderWidth: 1, borderColor: 'rgba(245, 158, 11, 0.3)', padding: 12, marginBottom: 16 }}>
                                 <AlertTriangle size={16} color={theme.colors.warning} />
                                 <View style={{ marginLeft: 12 }}>

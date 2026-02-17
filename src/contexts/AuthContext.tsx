@@ -4,6 +4,8 @@ import { authService } from '../services/authService';
 import { LoginRequest, UserResponse } from '../types';
 import { Logger } from '../services/Logger';
 import { BiometricService } from '../services/BiometricService';
+import NetInfo from '@react-native-community/netinfo';
+import { SyncService } from '../services/SyncService';
 
 interface AuthContextData {
     user: UserResponse | null;
@@ -33,6 +35,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 if (storedUser) {
                     Logger.info('Auth: Session restored', { email: storedUser.email, name: storedUser.name });
                     setUser(storedUser);
+
+                    // 🚀 BOOT SYNC CHECK (Auto-Login)
+                    NetInfo.fetch().then(async state => {
+                        if (state.isConnected && state.isInternetReachable !== false) {
+                            await SyncService.tryBootSync(true);
+                        }
+                    });
                 } else {
                     Logger.debug('Auth: No session found');
                 }

@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, KeyboardAvoidingView, Platform, Alert, Modal } from 'react-native';
+import { View, Text, TouchableOpacity, KeyboardAvoidingView, Platform, Alert, Modal, Image } from 'react-native';
 import { useAuth } from '../contexts/AuthContext';
 import { Lock, Mail, Eye, EyeOff, Fingerprint } from 'lucide-react-native';
 import { Button, Input, Card } from '../components/ui';
 import { theme } from '../theme';
+import { SyncService } from '../services/SyncService';
+import NetInfo from '@react-native-community/netinfo';
 
 export const LoginScreen = () => {
     const { signIn, signInWithBiometric, biometricAvailable, biometricEnabled, toggleBiometric, completeSignIn } = useAuth();
@@ -15,6 +17,15 @@ export const LoginScreen = () => {
     const [showBiometricDialog, setShowBiometricDialog] = useState(false);
     const [lastCredentials, setLastCredentials] = useState<{ email: string; password: string } | null>(null);
     const [pendingUserData, setPendingUserData] = useState<any>(null); // UserData esperando conclusão do dialog
+
+    const finishLogin = async (user: any) => {
+        const state = await NetInfo.fetch();
+        if (state.isConnected && state.isInternetReachable !== false) {
+            console.log('🔑 [LoginScreen] Triggering boot sync before navigation...');
+            await SyncService.tryBootSync(true);
+        }
+        completeSignIn(user);
+    };
 
     const handleLogin = async () => {
         if (!email || !password) {
@@ -43,7 +54,7 @@ export const LoginScreen = () => {
             } else {
                 console.log('🔑 [LoginScreen] NOT showing dialog - available:', biometricAvailable, 'enabled:', biometricEnabled);
                 console.log('🔑 [LoginScreen] Completing sign-in immediately');
-                completeSignIn(userData); // Completa login imediatamente
+                await finishLogin(userData); // Completa login imediatamente
             }
         } catch (err: any) {
             console.error('🔑 [LoginScreen] Login failed:', err);
@@ -84,7 +95,7 @@ export const LoginScreen = () => {
             // Completa o login após habilitar biometria
             if (pendingUserData) {
                 console.log('🔑 [LoginScreen] Completing sign-in after enabling biometric');
-                completeSignIn(pendingUserData);
+                await finishLogin(pendingUserData);
             }
         } catch (err: any) {
             console.error('🔑 [LoginScreen] Failed to enable biometric:', err);
@@ -93,19 +104,19 @@ export const LoginScreen = () => {
             // Completa o login mesmo se habilitar biometria falhou
             if (pendingUserData) {
                 console.log('🔑 [LoginScreen] Completing sign-in despite biometric error');
-                completeSignIn(pendingUserData);
+                await finishLogin(pendingUserData);
             }
         }
     };
 
-    const handleDeclineBiometric = () => {
+    const handleDeclineBiometric = async () => {
         console.log('🔑 [LoginScreen] User declined biometric');
         setShowBiometricDialog(false);
 
         // Completa o login quando usuário recusa biometria
         if (pendingUserData) {
             console.log('🔑 [LoginScreen] Completing sign-in after user declined');
-            completeSignIn(pendingUserData);
+            await finishLogin(pendingUserData);
         }
     };
 
@@ -134,21 +145,16 @@ export const LoginScreen = () => {
 
             {/* Logo */}
             <View style={{ alignItems: 'center', marginBottom: 40 }}>
-                <View
+                <Image
+                    source={require('../../assets/icon.png')}
                     style={{
-                        width: 64,
-                        height: 64,
-                        backgroundColor: theme.colors.primaryMuted,
-                        borderWidth: 2,
-                        borderColor: theme.colors.primary,
-                        borderRadius: 12,
-                        alignItems: 'center',
-                        justifyContent: 'center',
+                        width: 96,
+                        height: 96,
+                        borderRadius: 24,
                         marginBottom: 16,
                     }}
-                >
-                    <Text style={{ color: theme.colors.primary, fontWeight: 'bold', fontSize: 28 }}>S</Text>
-                </View>
+                    resizeMode="contain"
+                />
                 <Text
                     style={{
                         fontSize: 24,

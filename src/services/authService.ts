@@ -22,17 +22,54 @@ export const authService = {
         // Assuming api.ts has baseURL ending in /api/v1
 
         const response = await api.post<UserResponse>('/auth/login', credentials);
+        const userData = response.data;
 
-        if (response.data.token) {
-            await SecureStore.setItemAsync('user', JSON.stringify(response.data));
+        if (userData.token) {
+            // Enrich user profile from JWT payload (backend response may not include these fields)
+            try {
+                const parts = userData.token.split('.');
+                if (parts.length === 3) {
+                    let base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+                    const pad = base64.length % 4;
+                    if (pad) base64 += '='.repeat(4 - pad);
+                    const payload = JSON.parse(atob(base64));
 
-            // In a full implementation, we would fetch the user profile here similar to web.
-            // For this PoC, we will trust the login response or implement getMe later.
+                    // Extract email from JWT if not in response
+                    if (!userData.email) {
+                        userData.email = payload.email || payload.sub || credentials.email;
+                    }
+
+                    // Extract name from JWT (v_u = visible user name)
+                    if (!userData.name) {
+                        userData.name = payload.v_u || payload.name || userData.email?.split('@')[0] || undefined;
+                    }
+
+                    // Extract role from JWT
+                    if (!userData.role && !userData.roles) {
+                        userData.roles = payload.roles || (payload.role ? [payload.role] : undefined);
+                        userData.role = userData.roles?.[0];
+                    }
+
+                    console.log('🔐 [authService] Enriched user data:', JSON.stringify({
+                        email: userData.email,
+                        name: userData.name,
+                        role: userData.role,
+                    }));
+                }
+            } catch (e) {
+                console.error('[authService] JWT enrichment error:', e);
+            }
+            await SecureStore.setItemAsync('user', JSON.stringify(userData));
         }
-        return response.data;
+        return userData;
     },
 
     logout: async () => {
+        const session = await authService.getSessionClaims();
+        if (session?.empresaId) {
+            const { syncStorage } = require('../utils/syncStorage');
+            await syncStorage.clearLastTenantVersion(session.empresaId);
+        }
         await SecureStore.deleteItemAsync('user');
         // Não remove credenciais biométricas aqui - usuário deve fazer isso manualmente nas configurações
     },
@@ -41,12 +78,98 @@ export const authService = {
         try {
             const userStr = await SecureStore.getItemAsync('user');
             if (userStr) {
-                return JSON.parse(userStr);
+                const user = JSON.parse(userStr) as UserResponse;
+                // Enrich profile retroactively for existing sessions
+                if ((!user.name || !user.email) && user.token) {
+                    try {
+                        const parts = user.token.split('.');
+                        if (parts.length === 3) {
+                            let base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+                            const pad = base64.length % 4;
+                            if (pad) base64 += '='.repeat(4 - pad);
+                            const payload = JSON.parse(atob(base64));
+                            if (!user.email) user.email = payload.email || payload.sub || '';
+                            if (!user.name) user.name = payload.v_u || payload.name || user.email?.split('@')[0] || undefined;
+                            if (!user.role && !user.roles) {
+                                user.roles = payload.roles || undefined;
+                                user.role = user.roles?.[0];
+                            }
+                            // Persist enriched data
+                            await SecureStore.setItemAsync('user', JSON.stringify(user));
+                        }
+                    } catch (e) { /* ignore */ }
+                }
+                return user;
             }
         } catch (e) {
             console.error("Failed to get current user", e);
         }
         return null;
+    },
+
+    /**
+     * Retorna claims do token (userId, empresaId) sem depender de estado React.
+     * Fonte da verdade absoluta para Sync e Offline Logic.
+     */
+    getSessionClaims: async (): Promise<{ userId: number; empresaId: number; role?: string } | null> => {
+        try {
+            const userStr = await SecureStore.getItemAsync('user');
+            if (!userStr) return null;
+
+            const user = JSON.parse(userStr) as UserResponse;
+            if (!user.token) return null;
+
+            // Simple JWT Decode (Payload is part 2)
+            const parts = user.token.split('.');
+            if (parts.length !== 3) return null;
+
+            // Base64Url to Base64
+            let start = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+            // Pad with =
+            const pad = start.length % 4;
+            if (pad) {
+                if (pad === 1) throw new Error('InvalidLengthError: Input base64url string is the wrong length to determine padding');
+                start += new Array(5 - pad).join('=');
+            }
+
+            // Decode
+            const jsonPayload = atob(start);
+            // Note: 'atob' might not be available in all RN envs without polyfill, 
+            // but Expo usually supports it or we can use Buffer. 
+            // If atob fails, we might need a polyfill.
+            // Let's assume standard RN environment or use a safe decoder.
+
+            const payload = JSON.parse(jsonPayload);
+
+            // 🔍 DEBUG: Identify role field names in login response and JWT
+            console.log('[authService] 🔍 Session Claims Debug:', JSON.stringify({
+                'user.role': user.role,
+                'user.roles': user.roles,
+                'payload.role': payload.role,
+                'payload.roles': payload.roles,
+                'payload.authorities': payload.authorities,
+                'payload.scope': payload.scope,
+                'payloadKeys': Object.keys(payload)
+            }));
+
+            // Adjust field mapping based on backend JWT structure
+            // Usually: sub (id), empresaId, or custom claims
+            const resolvedRole = user.role
+                || payload.role
+                || (user.roles && user.roles[0])
+                || (payload.roles && payload.roles[0])
+                || (Array.isArray(payload.authorities) && payload.authorities[0])
+                || undefined;
+
+            return {
+                userId: Number(payload.sub || payload.id || payload.userId),
+                empresaId: Number(payload.tid || payload.empresaId || payload.empresa_id || 0),
+                role: resolvedRole
+            };
+        } catch (error) {
+            console.error('[authService] Failed to decode session claims:', error);
+            return null;
+        }
     },
 
     // ========== BIOMETRIC METHODS ==========

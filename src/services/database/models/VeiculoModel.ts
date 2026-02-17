@@ -5,7 +5,7 @@ import { databaseService } from '../DatabaseService';
 import { v4 as uuidv4 } from 'uuid';
 import { LocalVeiculo, SYNC_PRIORITIES } from './types';
 import type { VeiculoOS, AddVeiculoRequest } from '../../../types';
-// import { OSModel } from './OSModel'; // Replaced by lazy load in methods
+import { cleanZombies } from './BaseModel';
 
 export const VeiculoModel = {
     /**
@@ -13,7 +13,7 @@ export const VeiculoModel = {
      */
     async getById(id: number): Promise<LocalVeiculo | null> {
         return await databaseService.getFirst<LocalVeiculo>(
-            `SELECT * FROM veiculos_os WHERE id = ?`,
+            `SELECT * FROM veiculos_os WHERE id = ? AND deleted_at IS NULL`,
             [id]
         );
     },
@@ -23,7 +23,7 @@ export const VeiculoModel = {
      */
     async getByLocalId(localId: string): Promise<LocalVeiculo | null> {
         return await databaseService.getFirst<LocalVeiculo>(
-            `SELECT * FROM veiculos_os WHERE local_id = ?`,
+            `SELECT * FROM veiculos_os WHERE local_id = ? AND deleted_at IS NULL`,
             [localId]
         );
     },
@@ -33,7 +33,7 @@ export const VeiculoModel = {
      */
     async getByServerId(serverId: number): Promise<LocalVeiculo | null> {
         return await databaseService.getFirst<LocalVeiculo>(
-            `SELECT * FROM veiculos_os WHERE server_id = ?`,
+            `SELECT * FROM veiculos_os WHERE server_id = ? AND deleted_at IS NULL`,
             [serverId]
         );
     },
@@ -43,7 +43,7 @@ export const VeiculoModel = {
      */
     async getByOSId(osId: number): Promise<LocalVeiculo[]> {
         return await databaseService.runQuery<LocalVeiculo>(
-            `SELECT * FROM veiculos_os WHERE os_id = ? AND sync_status != 'PENDING_DELETE'`,
+            `SELECT * FROM veiculos_os WHERE os_id = ? AND deleted_at IS NULL AND sync_status != 'PENDING_DELETE'`,
             [osId]
         );
     },
@@ -54,7 +54,7 @@ export const VeiculoModel = {
     async searchByPlaca(placa: string): Promise<LocalVeiculo[]> {
         return await databaseService.runQuery<LocalVeiculo>(
             `SELECT * FROM veiculos_os 
-       WHERE placa LIKE ? AND sync_status != 'PENDING_DELETE'
+       WHERE placa LIKE ? AND deleted_at IS NULL AND sync_status != 'PENDING_DELETE'
        ORDER BY created_at DESC
        LIMIT 20`,
             [`%${placa}%`]
@@ -66,7 +66,7 @@ export const VeiculoModel = {
      */
     async verificarPlaca(placa: string): Promise<{ existe: boolean; veiculoExistente?: LocalVeiculo }> {
         const veiculo = await databaseService.getFirst<LocalVeiculo>(
-            `SELECT * FROM veiculos_os WHERE placa = ? ORDER BY created_at DESC LIMIT 1`,
+            `SELECT * FROM veiculos_os WHERE placa = ? AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1`,
             [placa.toUpperCase()]
         );
 
@@ -80,65 +80,95 @@ export const VeiculoModel = {
      * Criar veículo local
      */
     async create(data: AddVeiculoRequest & { osLocalId?: string }): Promise<LocalVeiculo> {
-        const now = Date.now();
-        const localId = uuidv4();
+        try {
+            console.log('[VeiculoModel] create() called', JSON.stringify(data));
+            const now = Date.now();
+            const localId = uuidv4();
+            console.log('[VeiculoModel] generated localId', localId);
 
-        // Resolver OS
-        let osId: number | null = null;
-        let osLocalId: string | null = data.osLocalId || null;
+            // Resolver OS
+            let osId: number | null = null;
+            let osLocalId: string | null = data.osLocalId || null;
 
-        const { OSModel } = require('./OSModel');
-        if (data.ordemServicoId) {
-            const os = await OSModel.getByServerId(data.ordemServicoId);
-            if (os) {
-                osId = os.id;
-                osLocalId = os.local_id;
+            console.log('[VeiculoModel] requiring OSModel...');
+            const { OSModel } = require('./OSModel');
+            console.log('[VeiculoModel] OSModel loaded:', !!OSModel);
+
+            // 1. Prioridade absoluta: Buscar por local_id (UUID)
+            if (osLocalId) {
+                console.log('[VeiculoModel] searching by osLocalId', osLocalId);
+                const os = await OSModel.getByLocalId(osLocalId);
+                if (os) {
+                    osId = os.id;
+                    osLocalId = os.local_id;
+                    console.log(`[VeiculoModel] 🔗 Vinculado via osLocalId ${osLocalId} -> PK ${osId}`);
+                } else {
+                    console.log('[VeiculoModel] osLocalId not found');
+                }
             }
-        }
 
-        // Se não achou por server_id (ou não foi passado), tentar pelo local_id
-        if (!osId && osLocalId) {
-            const os = await OSModel.getByLocalId(osLocalId);
-            if (os) {
-                osId = os.id;
+            // 2. Fallback: Se não achou por local_id, busca por server_id
+            if (!osId && data.ordemServicoId) {
+                console.log('[VeiculoModel] fallback searching by ordemServicoId', data.ordemServicoId);
+                // Tenta primeiro como server_id
+                const osByServer = await OSModel.getByServerId(data.ordemServicoId);
+                if (osByServer) {
+                    osId = osByServer.id;
+                    osLocalId = osByServer.local_id;
+                    console.log(`[VeiculoModel] 🔗 Vinculado via server_id ${data.ordemServicoId} -> PK ${osId}`);
+                } else {
+                    // Se não é server_id, pode ser PK local
+                    const osByPk = await OSModel.getById(data.ordemServicoId);
+                    if (osByPk) {
+                        osId = osByPk.id;
+                        osLocalId = osByPk.local_id;
+                        console.log(`[VeiculoModel] 🔗 Vinculado via PK local ${data.ordemServicoId} -> LocalId ${osLocalId}`);
+                    }
+                }
             }
+
+
+            const placaValue = data.placa ? data.placa.toUpperCase() : '';
+
+            if (!placaValue) {
+                console.error('[VeiculoModel] ❌ Critical: Placa is missing/empty in create payload', JSON.stringify(data));
+                throw new Error('Placa is required for vehicle creation');
+            }
+
+            const insertParams = [
+                localId,
+                null, // server_id
+                1, // version
+                osId,
+                osLocalId,
+                placaValue,
+                data.modelo || null,
+                data.cor || null,
+                0, // valor_total
+                now, // updated_at
+                now // created_at
+                // deleted_at implicitly null
+            ];
+
+            console.log('[VeiculoModel] 🛠️ Inserting vehicle with params:', JSON.stringify(insertParams));
+
+            const id = await databaseService.runInsert(
+                `INSERT INTO veiculos_os (
+            local_id, server_id, version, os_id, os_local_id,
+            placa, modelo, cor, valor_total, sync_status, updated_at, created_at, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_CREATE', ?, ?, ?)`,
+                [...insertParams, null]
+            );
+
+            await this.addToSyncQueue(localId, 'CREATE', { ...data, osLocalId });
+
+            console.log('[VeiculoModel] ✅ create() SUCCESS. ID:', id);
+            return (await this.getById(id))!;
+        } catch (error: any) {
+            console.error('[VeiculoModel] ❌ create() FAILED:', error.message);
+            console.error('[VeiculoModel] Stack:', error.stack);
+            throw error;
         }
-
-
-        const placaValue = data.placa ? data.placa.toUpperCase() : '';
-
-        if (!placaValue) {
-            console.error('[VeiculoModel] ❌ Critical: Placa is missing/empty in create payload', JSON.stringify(data));
-            throw new Error('Placa is required for vehicle creation');
-        }
-
-        const insertParams = [
-            localId,
-            null,
-            1,
-            osId,
-            osLocalId,
-            placaValue,
-            data.modelo || null,
-            data.cor || null,
-            0,
-            now,
-            now
-        ];
-
-        console.log('[VeiculoModel] 🛠️ Inserting vehicle with params:', JSON.stringify(insertParams));
-
-        const id = await databaseService.runInsert(
-            `INSERT INTO veiculos_os (
-        local_id, server_id, version, os_id, os_local_id,
-        placa, modelo, cor, valor_total, sync_status, updated_at, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_CREATE', ?, ?)`,
-            insertParams
-        );
-
-        await this.addToSyncQueue(localId, 'CREATE', data);
-
-        return (await this.getById(id))!;
     },
 
     /**
@@ -173,10 +203,10 @@ export const VeiculoModel = {
         if (existing) {
             await databaseService.runUpdate(
                 `UPDATE veiculos_os SET
-          server_id = ?, placa = ?, modelo = ?, cor = ?, valor_total = ?,
-          sync_status = 'SYNCED', updated_at = ?
+          server_id = ?, os_id = ?, placa = ?, modelo = ?, cor = ?, valor_total = ?,
+          sync_status = 'SYNCED', updated_at = ?, deleted_at = ?
          WHERE id = ?`,
-                [veiculo.id, veiculo.placa, veiculo.modelo, veiculo.cor, veiculo.valorTotal, now, existing.id]
+                [veiculo.id, osLocalId, veiculo.placa, veiculo.modelo, veiculo.cor, veiculo.valorTotal, now, veiculo.deletedAt || null, existing.id]
             );
             localVeiculo = (await this.getById(existing.id))!;
         } else {
@@ -184,24 +214,41 @@ export const VeiculoModel = {
             const id = await databaseService.runInsert(
                 `INSERT INTO veiculos_os (
           local_id, server_id, version, os_id, placa, modelo, cor, valor_total,
-          sync_status, updated_at, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'SYNCED', ?, ?)`,
-                [localId, veiculo.id, 1, osLocalId, veiculo.placa, veiculo.modelo, veiculo.cor, veiculo.valorTotal, now, now]
+          sync_status, updated_at, created_at, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'SYNCED', ?, ?, ?)`,
+                [localId, veiculo.id, 1, osLocalId, veiculo.placa, veiculo.modelo, veiculo.cor, veiculo.valorTotal, now, now, veiculo.deletedAt || null]
             );
             localVeiculo = (await this.getById(id))!;
         }
 
         // Sync Peças/Serviços
-        if (veiculo.pecas && veiculo.pecas.length > 0) {
+        if (veiculo.pecas) {
             try {
                 const { PecaModel } = require('./PecaModel');
+                const validServerIds = new Set<number>();
+
+                // 1. Upsert incoming
                 for (const p of veiculo.pecas) {
-                    await PecaModel.upsertFromServer(p, localVeiculo.id);
+                    const saved = await PecaModel.upsertFromServer(p, localVeiculo.id);
+                    if (saved.server_id) validServerIds.add(saved.server_id);
                 }
+
+                // 2. Cleanup ("Zombie" pruning) - Generic Implementation
+                // Remove peças que estão no banco local (SYNCED) mas não vieram no payload do servidor
+                // Protege registros PENDING automaticamente
+                const serverIdsArray = Array.from(validServerIds);
+                if (serverIdsArray.length > 0) {
+                    await cleanZombies('pecas_os', 'veiculo_id', localVeiculo.id, serverIdsArray);
+                } else if (veiculo.pecas.length === 0) {
+                    // Se veio array vazio EXPLICITAMENTE, assume que removeu tudo
+                    await cleanZombies('pecas_os', 'veiculo_id', localVeiculo.id, []);
+                }
+
             } catch (e) {
                 console.error('[VeiculoModel] Erro ao sincronizar peças filhas', e);
             }
         }
+
 
         return localVeiculo;
     },
@@ -276,13 +323,10 @@ export const VeiculoModel = {
             [serverId, localId]
         );
 
-        // 2. CASCATA: Atualizar peças filhas para apontar pro novo server_id do veículo
-        const childrenUpdated = await databaseService.runUpdate(
-            `UPDATE pecas_os SET veiculo_id = ? WHERE veiculo_local_id = ?`,
-            [serverId, localId]
-        );
-
-        console.log(`[VeiculoModel] ✅ Veiculo synced. Updated ${childrenUpdated} child pecas to point to Veiculo ID ${serverId}`);
+        // 2. CASCATA: REMOVIDO
+        // Não atualizar peças filhas com server_id, pois veiculo_id refere-se à PK Local
+        // O vínculo é mantido pelo veiculo_id (PK Local) que não muda.
+        console.log(`[VeiculoModel] ✅ Veiculo synced (ID ${serverId}). Local links preserved.`);
 
         // 3. Remover da fila de sync
         await databaseService.runDelete(
