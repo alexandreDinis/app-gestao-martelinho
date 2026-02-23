@@ -509,6 +509,16 @@ class SyncEngine {
     }
 
     /**
+     * Resetar estado em memória (usado após reset de banco)
+     */
+    resetState(): void {
+        console.log('[SyncEngine] 🔄 Resetting in-memory state...');
+        this.lastSyncTime = null;
+        this.isSyncing = false;
+        this.notifyListeners();
+    }
+
+    /**
      * Força sincronização manual
      */
     async forceSync(): Promise<SyncResult> {

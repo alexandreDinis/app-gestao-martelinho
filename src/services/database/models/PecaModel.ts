@@ -278,5 +278,19 @@ export const PecaModel = {
         }
 
         return true;
+    },
+
+    /**
+     * Converter LocalPeca para formato API (PecaOS)
+     */
+    toApiFormat(local: LocalPeca): PecaOS {
+        return {
+            id: local.server_id || local.id,
+            localId: local.local_id,
+            tipoPecaId: local.tipo_peca_id || undefined,
+            nomePeca: local.nome_peca || '',
+            valorCobrado: local.valor_cobrado || 0,
+            descricao: local.descricao || undefined
+        } as PecaOS;
     }
 };

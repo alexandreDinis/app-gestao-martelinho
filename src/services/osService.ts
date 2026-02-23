@@ -69,27 +69,26 @@ export const osService = {
         };
 
         if (isOnline) {
-            return await safeRequest(
-                async () => {
-                    Logger.info('[OSService] Fetching clients from API');
-                    const params = new URLSearchParams();
-                    if (filtros) {
-                        Object.entries(filtros).forEach(([key, value]) => {
-                            if (value) params.append(key, value);
-                        });
-                    }
-                    const response = await api.get<Cliente[]>(`/clientes?${params.toString()}`);
+            try {
+                Logger.info('[OSService] Fetching clients from API');
+                const params = new URLSearchParams();
+                if (filtros) {
+                    Object.entries(filtros).forEach(([key, value]) => {
+                        if (value) params.append(key, value);
+                    });
+                }
+                const response = await api.get<Cliente[]>(`/clientes?${params.toString()}`);
 
-                    // Cache side-effect
-                    if (response.data) {
-                        const { ClienteModel } = require('./database/models/ClienteModel');
-                        await ClienteModel.upsertBatch(response.data);
-                    }
-                    return response;
-                },
-                fetchLocal,
-                'OSService.listClientes'
-            );
+                // Cache side-effect: save API clients to local DB
+                if (response.data) {
+                    const { ClienteModel } = require('./database/models/ClienteModel');
+                    await ClienteModel.upsertBatch(response.data);
+                }
+            } catch (error) {
+                Logger.warn('[OSService] API client fetch failed, using local DB', error);
+            }
+            // Always return from local DB to ensure localId is present
+            return await fetchLocal();
         }
 
         return await fetchLocal();
@@ -112,22 +111,32 @@ export const osService = {
         const session = await authService.getSessionClaims();
 
         if (!session?.empresaId) {
+            Logger.error('[OSService] ❌ empresaId MISSING from session!', { session });
             throw new Error('Empresa ID não encontrado na sessão. Faça login novamente.');
         }
 
         const empresaId = session.empresaId;
+        Logger.info('[OSService] ✅ Session OK', { empresaId, userId: session.userId });
 
         // 1. Resolve o cliente para garantir vínculo via Local ID (UUID)
         const { ClienteModel } = require('./database/models/ClienteModel');
         const cliente = await ClienteModel.getByLocalId(data.clienteLocalId);
         if (!cliente) {
+            Logger.error('[OSService] ❌ Cliente NOT FOUND by localId!', { localId: data.clienteLocalId });
             throw new Error(`Cliente local não encontrado: ${data.clienteLocalId}`);
         }
+        Logger.info('[OSService] ✅ Cliente found', {
+            localId: cliente.local_id,
+            serverId: cliente.server_id,
+            pk: cliente.id,
+            razaoSocial: cliente.razao_social
+        });
 
         const { isConnected, isInternetReachable } = await OfflineDebug.checkConnectivity();
         const isOnline = isConnected && isInternetReachable && !OfflineDebug.isForceOffline();
 
         // 2. Criar Localmente (Priorizando cliente_local_id)
+        Logger.info('[OSService] 🔍 Step: Creating OS locally...', { empresaId, clienteLocalId: cliente.local_id });
         const localOS = await OSModel.create({
             ...data,
             clienteId: cliente.server_id || undefined, // Atachamos o server_id se já existir
@@ -157,7 +166,7 @@ export const osService = {
                 Logger.info('[OSService] Immediate Sync Success. Attaching Server ID:', response.data.id);
                 await OSModel.attachServerId(localOS.local_id, response.data.id, response.data.updatedAt);
 
-                return response.data;
+                return await OSModel.toApiFormat(localOS);
             } catch (error) {
                 Logger.warn('[OSService] Immediate sync failed, staying in offline mode', error);
             }
@@ -250,10 +259,6 @@ export const osService = {
                 async () => {
                     Logger.info('[OSService] Fetching OS from API (online-first)', { id });
                     const response = await api.get<OrdemServico>(`/ordens-servico/${id}`);
-
-                    if (response.data) {
-                        await OSModel.upsertFromServer(response.data, session.empresaId);
-                    }
 
                     // We return converted local format to ensure UI consistency
                     // OR we could return response.data directly. 
@@ -416,9 +421,17 @@ export const osService = {
                     const os = await OSModel.getByServerId(data.ordemServicoId);
 
                     // Upsert usando o veículo extraído corretamente
-                    await VeiculoModel.upsertFromServer(createdVeiculo, os?.id || 0);
+                    const localVeiculo = await VeiculoModel.upsertFromServer(createdVeiculo, os?.id || 0);
 
-                    return createdVeiculo as VeiculoOS;
+                    return {
+                        id: localVeiculo.server_id || localVeiculo.id,
+                        localId: localVeiculo.local_id,
+                        placa: localVeiculo.placa,
+                        modelo: localVeiculo.modelo || '',
+                        cor: localVeiculo.cor || '',
+                        valorTotal: localVeiculo.valor_total || 0,
+                        pecas: []
+                    };
                 }
 
                 // Fallback se algo muito estranho acontecer
@@ -638,7 +651,7 @@ export const osService = {
                 const VeiculoModel = await import('./database/models/VeiculoModel').then(m => m.VeiculoModel);
 
                 const veiculo = await VeiculoModel.getByServerId(data.veiculoId);
-                await PecaModel.upsertFromServer(response.data, veiculo?.id || 0);
+                const localPeca = await PecaModel.upsertFromServer(response.data, veiculo?.id || 0);
 
                 // Recalcular totais locais
                 if (veiculo) {
@@ -647,7 +660,13 @@ export const osService = {
                     if (osIdToRecalc) await OSModel.recalculateTotal(osIdToRecalc);
                 }
 
-                return response.data;
+                return {
+                    id: localPeca.server_id || localPeca.id,
+                    localId: localPeca.local_id,
+                    nomePeca: localPeca.nome_peca || '',
+                    valorCobrado: localPeca.valor_cobrado || 0,
+                    descricao: localPeca.descricao || ''
+                };
             } catch (error) {
                 Logger.error('[OSService] API addPeca failed, falling back to offline mode', error);
             }

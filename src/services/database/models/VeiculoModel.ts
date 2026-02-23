@@ -358,5 +358,20 @@ export const VeiculoModel = {
                 [localId, operation, payload ? JSON.stringify(payload) : null, now]
             );
         }
+    },
+
+    /**
+     * Converter LocalVeiculo para formato API (VeiculoOS)
+     */
+    toApiFormat(local: LocalVeiculo): VeiculoOS {
+        return {
+            id: local.server_id || local.id,
+            localId: local.local_id,
+            placa: local.placa,
+            modelo: local.modelo || '',
+            cor: local.cor || '',
+            valorTotal: local.valor_total || 0,
+            pecas: []
+        } as VeiculoOS;
     }
 };

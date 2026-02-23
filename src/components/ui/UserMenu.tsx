@@ -1,7 +1,9 @@
 import React, { useState } from 'react';
-import { View, Text, TouchableOpacity, Modal, Pressable } from 'react-native';
-import { LogOut, ChevronDown, Shield, Key, X } from 'lucide-react-native';
+import { View, Text, TouchableOpacity, Modal, Pressable, Alert, ActivityIndicator } from 'react-native';
+import { LogOut, ChevronDown, Shield, Key, RefreshCw } from 'lucide-react-native';
 import { useAuth } from '../../contexts/AuthContext';
+import { databaseService } from '../../services/database/DatabaseService';
+import { syncEngine } from '../../services/sync/SyncEngine';
 import { theme } from '../../theme';
 
 const getInitials = (name?: string, email?: string) => {
@@ -34,6 +36,58 @@ interface UserMenuProps {
 export const UserMenu: React.FC<UserMenuProps> = ({ onChangePassword }) => {
     const { user, signOut } = useAuth();
     const [isOpen, setIsOpen] = useState(false);
+    const [isResetting, setIsResetting] = useState(false);
+
+    const handleResetDatabase = () => {
+        setIsOpen(false);
+        Alert.alert(
+            'Resetar Banco Local',
+            'Isso vai apagar todos os dados locais do aplicativo e sincronizar novamente com o servidor.\n\nDados não sincronizados serão perdidos.',
+            [
+                { text: 'Cancelar', style: 'cancel' },
+                {
+                    text: 'Resetar',
+                    style: 'destructive',
+                    onPress: () => {
+                        Alert.alert(
+                            'Tem certeza?',
+                            'Esta ação não pode ser desfeita. O app vai recarregar após o reset.',
+                            [
+                                { text: 'Cancelar', style: 'cancel' },
+                                {
+                                    text: 'Sim, Resetar',
+                                    style: 'destructive',
+                                    onPress: async () => {
+                                        try {
+                                            setIsResetting(true);
+                                            await databaseService.resetDatabase();
+                                            syncEngine.resetState();
+                                            Alert.alert(
+                                                'Banco Resetado',
+                                                'O banco local foi limpo. Sincronizando dados do servidor...',
+                                                [{
+                                                    text: 'OK',
+                                                    onPress: () => {
+                                                        syncEngine.forceSync().catch(e =>
+                                                            console.error('[UserMenu] Post-reset sync failed:', e)
+                                                        );
+                                                    }
+                                                }]
+                                            );
+                                        } catch (error: any) {
+                                            Alert.alert('Erro', `Falha ao resetar: ${error?.message || 'Erro desconhecido'}`);
+                                        } finally {
+                                            setIsResetting(false);
+                                        }
+                                    }
+                                }
+                            ]
+                        );
+                    }
+                }
+            ]
+        );
+    };
 
     if (!user) return null;
 
@@ -182,6 +236,32 @@ export const UserMenu: React.FC<UserMenuProps> = ({ onChangePassword }) => {
                                 </TouchableOpacity>
                             </View>
                         )}
+
+                        {/* Reset Database */}
+                        <View style={{ paddingVertical: 4 }}>
+                            <TouchableOpacity
+                                onPress={handleResetDatabase}
+                                disabled={isResetting}
+                                style={{
+                                    flexDirection: 'row',
+                                    alignItems: 'center',
+                                    gap: 12,
+                                    paddingHorizontal: 16,
+                                    paddingVertical: 12,
+                                    opacity: isResetting ? 0.5 : 1,
+                                }}
+                                activeOpacity={0.7}
+                            >
+                                {isResetting ? (
+                                    <ActivityIndicator size={16} color="rgba(251, 191, 36, 0.7)" />
+                                ) : (
+                                    <RefreshCw size={16} color="rgba(251, 191, 36, 0.7)" />
+                                )}
+                                <Text style={{ color: 'rgba(251, 191, 36, 0.7)', fontSize: 11, fontWeight: '700', letterSpacing: 0.5, textTransform: 'uppercase' }}>
+                                    {isResetting ? 'Resetando...' : 'Resetar Banco Local'}
+                                </Text>
+                            </TouchableOpacity>
+                        </View>
 
                         {/* Logout */}
                         <View

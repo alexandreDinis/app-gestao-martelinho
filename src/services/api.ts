@@ -3,7 +3,7 @@ import * as SecureStore from 'expo-secure-store';
 
 // In Emulator (Android), localhost is 10.0.2.2.
 // Replace with your text machine IP if testing on physical device (e.g., http://192.168.1.15:8080/api/v1)
-const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://192.168.15.46:8080/api/v1';
+const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? 'https://api.martelinhodigital.com.br/api/v1';
 
 const api = axios.create({
     baseURL: API_BASE_URL,

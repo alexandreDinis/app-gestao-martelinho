@@ -5,7 +5,7 @@ import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../navigation/types';
 import { ChevronLeft, Calendar, User, Car, Share2, CheckCircle, DollarSign, Wrench, Plus, Trash2, Ban, X, Edit2, Save, Search, AlertTriangle } from 'lucide-react-native';
 import Toast from 'react-native-toast-message';
-import { Picker } from '@react-native-picker/picker';
+
 import { osService } from '../services/osService';
 import { userService } from '../services/userService';
 import { OrdemServico, OSStatus, VeiculoOS, PecaOS, User as UserType } from '../types';
@@ -452,42 +452,116 @@ export const OSDetailsScreen = () => {
                     </View>
 
                     {isEditingUser ? (
-                        <View>
-                            <View style={{ borderWidth: 1, borderColor: theme.colors.border, borderRadius: 8, marginBottom: 8 }}>
-                                <Picker
-                                    selectedValue={selectedUserId}
-                                    onValueChange={(itemValue) => setSelectedUserId(itemValue)}
-                                    style={{ color: theme.colors.text }}
-                                    dropdownIconColor={theme.colors.primary}
+                        <Modal visible={isEditingUser} animationType="slide" transparent>
+                            <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.9)', justifyContent: 'flex-end' }}>
+                                <View
+                                    style={{
+                                        backgroundColor: theme.colors.backgroundSecondary,
+                                        borderTopLeftRadius: 24,
+                                        borderTopRightRadius: 24,
+                                        padding: 24,
+                                        borderWidth: 1,
+                                        borderColor: theme.colors.border,
+                                        maxHeight: '60%',
+                                    }}
                                 >
-                                    <Picker.Item label="Selecione..." value={null} style={{ color: '#666' }} />
-                                    {Array.isArray(users) && users.map(u => (
-                                        <Picker.Item
-                                            key={u.id}
-                                            label={u.name || u.email}
-                                            value={u.server_id || u.id}
-                                            style={{ color: '#000' }}
-                                        />
-                                    ))}
-                                </Picker>
-                            </View>
-                            <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 12 }}>
-                                <TouchableOpacity onPress={() => setIsEditingUser(false)} style={{ padding: 8 }}>
-                                    <Text style={{ color: theme.colors.error }}>Cancelar</Text>
-                                </TouchableOpacity>
-                                <TouchableOpacity onPress={handleUpdateOwner} style={{ padding: 8, backgroundColor: theme.colors.primary, borderRadius: 4 }}>
-                                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                                        <Save size={14} color="#000" />
-                                        <Text style={{ color: '#000', fontWeight: 'bold', marginLeft: 4 }}>Salvar</Text>
+                                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+                                        <Text style={{ color: theme.colors.text, fontSize: 18, fontWeight: '900' }}>Responsável Técnico</Text>
+                                        <TouchableOpacity onPress={() => setIsEditingUser(false)}>
+                                            <X size={24} color={theme.colors.textMuted} />
+                                        </TouchableOpacity>
                                     </View>
-                                </TouchableOpacity>
+
+                                    <ScrollView style={{ marginBottom: 16 }}>
+                                        {Array.isArray(users) && users.map(u => {
+                                            const userId = u.server_id || u.id;
+                                            const isSelected = selectedUserId === userId;
+                                            return (
+                                                <TouchableOpacity
+                                                    key={u.id}
+                                                    onPress={() => setSelectedUserId(userId)}
+                                                    style={{
+                                                        flexDirection: 'row',
+                                                        alignItems: 'center',
+                                                        padding: 14,
+                                                        borderRadius: 8,
+                                                        marginBottom: 6,
+                                                        backgroundColor: isSelected ? theme.colors.primaryMuted : 'rgba(0,0,0,0.3)',
+                                                        borderWidth: 1,
+                                                        borderColor: isSelected ? 'rgba(212, 175, 55, 0.5)' : theme.colors.border,
+                                                    }}
+                                                >
+                                                    <View
+                                                        style={{
+                                                            width: 22,
+                                                            height: 22,
+                                                            borderRadius: 11,
+                                                            borderWidth: 2,
+                                                            borderColor: isSelected ? theme.colors.primary : theme.colors.textMuted,
+                                                            alignItems: 'center',
+                                                            justifyContent: 'center',
+                                                            marginRight: 12,
+                                                        }}
+                                                    >
+                                                        {isSelected && (
+                                                            <View style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: theme.colors.primary }} />
+                                                        )}
+                                                    </View>
+                                                    <View style={{ flex: 1 }}>
+                                                        <Text style={{ color: isSelected ? theme.colors.primary : theme.colors.text, fontSize: 15, fontWeight: '600' }}>
+                                                            {u.name || 'Sem nome'}
+                                                        </Text>
+                                                        {u.email && (
+                                                            <Text style={{ color: theme.colors.textMuted, fontSize: 11, marginTop: 2 }}>{u.email}</Text>
+                                                        )}
+                                                    </View>
+                                                    {isSelected && <CheckCircle size={18} color={theme.colors.primary} />}
+                                                </TouchableOpacity>
+                                            );
+                                        })}
+                                    </ScrollView>
+
+                                    <View style={{ flexDirection: 'row', gap: 12 }}>
+                                        <TouchableOpacity
+                                            onPress={() => setIsEditingUser(false)}
+                                            style={{
+                                                flex: 1,
+                                                padding: 14,
+                                                borderRadius: 8,
+                                                alignItems: 'center',
+                                                borderWidth: 1,
+                                                borderColor: theme.colors.border,
+                                            }}
+                                        >
+                                            <Text style={{ color: theme.colors.textSecondary, fontWeight: '700' }}>Cancelar</Text>
+                                        </TouchableOpacity>
+                                        <TouchableOpacity
+                                            onPress={() => { handleUpdateOwner(); setIsEditingUser(false); }}
+                                            disabled={!selectedUserId || updating}
+                                            style={{
+                                                flex: 1,
+                                                flexDirection: 'row',
+                                                padding: 14,
+                                                borderRadius: 8,
+                                                alignItems: 'center',
+                                                justifyContent: 'center',
+                                                backgroundColor: selectedUserId ? theme.colors.primary : 'rgba(212, 175, 55, 0.3)',
+                                            }}
+                                        >
+                                            <Save size={16} color="#000" />
+                                            <Text style={{ color: '#000', fontWeight: '700', marginLeft: 6 }}>
+                                                {updating ? 'Salvando...' : 'Salvar'}
+                                            </Text>
+                                        </TouchableOpacity>
+                                    </View>
+                                </View>
                             </View>
-                        </View>
-                    ) : (
-                        <Text style={{ color: theme.colors.text, fontSize: 16, fontWeight: '700' }}>
-                            {os.usuarioNome || os.usuarioEmail || 'Não Atribuído'}
-                        </Text>
-                    )}
+                        </Modal>
+                    ) : null}
+
+                    <Text style={{ color: theme.colors.text, fontSize: 16, fontWeight: '700' }}>
+                        {os.usuarioNome || os.usuarioEmail || 'Não Atribuído'}
+                    </Text>
                 </Card>
 
                 {/* Date & Value Summary */}

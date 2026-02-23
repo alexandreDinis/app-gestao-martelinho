@@ -429,11 +429,12 @@ class DatabaseService {
     }
 
     /**
-     * 🔧 DEBUG: Resetar banco de dados (apagar tudo e recriar)
+     * 🔧 Resetar banco de dados (apagar tudo e recriar)
+     * Limpa todas as tabelas + marcadores de sync do SecureStore
      */
     async resetDatabase(): Promise<void> {
         console.log('[DatabaseService] 🔄 Resetting database...');
-        const db = await this.getDatabase(); // Use await getDatabase()
+        const db = await this.getDatabase();
 
         // Listar todas as tabelas
         const tables = await db.getAllAsync<{ name: string }>(`
@@ -448,21 +449,74 @@ class DatabaseService {
         }
 
         // 🛡️ LIMPEZA DE ESTADO DE SYNC (CRÍTICO)
-        // Se apagamos o banco, precisamos apagar os marcadores de sync para forçar bootstrap
+        // Marcadores de sync usam chaves dinâmicas: {key}_{baseHash}_{empresaId}
+        // Precisamos construir as chaves corretas usando a mesma lógica do SyncService
         try {
             const SecureStore = require('expo-secure-store');
-            console.log('[DatabaseService] 🧹 Clearing sync markers from SecureStore...');
-            await SecureStore.deleteItemAsync('last_full_sync_at');
-            await SecureStore.deleteItemAsync('last_sync_clientes');
-            await SecureStore.deleteItemAsync('last_sync_os');
-            await SecureStore.deleteItemAsync('has_forced_address_repair_v1');
+            console.log('[DatabaseService] 🧹 Clearing ALL sync markers from SecureStore...');
+
+            // Construir baseHash da mesma forma que SyncService.getBaseHash()
+            const api = require('../api').default;
+            const url = (api.defaults.baseURL || '').replace(/\/+$/, '');
+            const baseHash = url.replace(/https?:\/\//, '').replace(/[^a-zA-Z0-9]/g, '_');
+
+            // Obter empresaId da sessão atual
+            let empresaId: number | null = null;
+            try {
+                const { authService } = require('../authService');
+                const session = await authService.getSessionClaims();
+                empresaId = session?.empresaId || null;
+            } catch (e) {
+                console.warn('[DatabaseService] Could not get empresaId from session', e);
+            }
+
+            // Chaves base que o SyncService usa
+            const markerPrefixes = [
+                'last_full_sync_at',
+                'last_sync_clientes',
+                'last_sync_os',
+                'last_sync_catalogo',
+                'has_forced_address_repair_v1',
+                'sync_lastTenantVersion',
+                'sync_session_active'
+            ];
+
+            // Limpar chaves dinâmicas (com hash + empresaId)
+            if (baseHash && empresaId) {
+                for (const prefix of markerPrefixes) {
+                    const key = `${prefix}_${baseHash}_${empresaId}`;
+                    console.log(`[DatabaseService] 🗑️ Deleting: ${key}`);
+                    await SecureStore.deleteItemAsync(key).catch(() => { });
+                }
+            }
+
+            // Also try with just baseHash (no empresaId) for broader cleanup
+            if (baseHash) {
+                for (const prefix of markerPrefixes) {
+                    const key = `${prefix}_${baseHash}`;
+                    await SecureStore.deleteItemAsync(key).catch(() => { });
+                }
+            }
+
+            // Limpar também chaves plain (fallback de versões antigas)
+            for (const prefix of markerPrefixes) {
+                await SecureStore.deleteItemAsync(prefix).catch(() => { });
+            }
+
+            console.log('[DatabaseService] ✅ All sync markers cleared');
         } catch (error) {
             console.warn('[DatabaseService] Failed to clear SecureStore markers:', error);
         }
 
+        // Resetar estado de inicialização para forçar re-init completo
+        this.isInitialized = false;
+        this.initPromise = null;
+        this.db = null;
+
         // Recriar do zero
         console.log('[DatabaseService] Re-running migrations...');
         await this.runMigrations();
+        this.isInitialized = true;
         console.log('[DatabaseService] ✅ Database reset complete');
     }
 }
